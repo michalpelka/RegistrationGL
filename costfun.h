@@ -1,7 +1,5 @@
 #pragma once
 
-
-
 #include <ceres/ceres.h>
 #include <sophus/se3.hpp>
 Eigen::Affine3d orthogonize(const Eigen::Affine3d& p )
@@ -134,37 +132,26 @@ struct costFunICPGT{
 
 
 struct costFunICP{
-    const Sophus::SE3d imu_offset_inv;
     const Eigen::Vector4f local_point1;
     const Eigen::Vector4f local_point2;
 
 
-    costFunICP(const Eigen::Vector3f _local_point1, const Eigen::Vector3f & _local_point2,Sophus::SE3d imu_offset) :
-            local_point1(_local_point1.x(),_local_point1.y(),_local_point1.z(),1.0f),
-            local_point2(_local_point2.x(),_local_point2.y(),_local_point2.z(),1.0f),
-            imu_offset_inv(imu_offset.inverse())
-
+    costFunICP(const Eigen::Vector4f _local_point1, const Eigen::Vector4f & _local_point2) :
+            local_point1(_local_point1),local_point2(_local_point2)
     {}
 
     template <typename T>
-    bool operator()(const T* const odom1tan, const T* const odom2tan, const T* const instrument1tan,
-                    const T* const instrument2tan,
+    bool operator()(const T* const odom1tan, const T* const odom2tan,
                     T* residuals) const {
 
 
         Eigen::Map<Sophus::SE3<T> const>  pose1(odom1tan);
         Eigen::Map<Sophus::SE3<T> const>  pose2(odom2tan);
 
-        Eigen::Map<Sophus::SE3<T> const>  instrument1pose(instrument1tan);
-        Eigen::Map<Sophus::SE3<T> const>  instrument2pose(instrument2tan);
 
 
-        Sophus::SE3<T> imu_pose1 = pose1 * imu_offset_inv.cast<T>();
-        Sophus::SE3<T> imu_pose2 = pose2 * imu_offset_inv.cast<T>();
-
-
-        Eigen::Matrix<T,4,1> pt1 =imu_pose1 *instrument1pose *  local_point1.cast<T>();
-        Eigen::Matrix<T,4,1> pt2 =imu_pose2 *instrument2pose *  local_point2.cast<T>();
+        Eigen::Matrix<T,4,1> pt1 =pose1 *  local_point1.cast<T>();
+        Eigen::Matrix<T,4,1> pt2 =pose2 *  local_point2.cast<T>();
 
         residuals[0] = pt1.x()-pt2.x();
         residuals[1] = pt1.y()-pt2.y();
@@ -173,10 +160,9 @@ struct costFunICP{
 
         return true;
     }
-    static ceres::CostFunction* Create(const Eigen::Vector3f _local_point1, const Eigen::Vector3f & _local_point2,Sophus::SE3d imu_offset) {
-        return (new ceres::AutoDiffCostFunction<costFunICP,3, Sophus::SE3d::num_parameters,
-                Sophus::SE3d::num_parameters,Sophus::SE3d::num_parameters,Sophus::SE3d::num_parameters >(
-                new costFunICP(_local_point1, _local_point2, imu_offset)));
+    static ceres::CostFunction* Create(const Eigen::Vector4f _local_point1, const Eigen::Vector4f & _local_point2) {
+        return (new ceres::AutoDiffCostFunction<costFunICP,3, Sophus::SE3d::num_parameters,Sophus::SE3d::num_parameters>(
+                new costFunICP(_local_point1, _local_point2)));
     }
 };
 

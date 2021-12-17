@@ -9,11 +9,52 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/io/pcd_io.h>
+#include <boost/property_tree/ptree.hpp>
+#include <boost/property_tree/json_parser.hpp>
+#include <glob.h>
 
 namespace my_utils{
 
+    void saveState(const std::string &fn, const std::vector<Eigen::Matrix4d>& trajectory)
+    {
+        const auto serialize = [](Sophus::SE3d &m){
+            std::stringstream ss;
+            const auto m_l = m.log();
+            ss << m_l[0] << " "<< m_l[1] << " "<< m_l[2] << " ";
+            ss << m_l[3] << " "<< m_l[4] << " "<< m_l[5];
+            return ss.str();
+        };
 
+        boost::property_tree::ptree  pt;
+        for (int i =0; i < trajectory.size(); i++)
+        {
+            auto t = Sophus::SE3d::fitToSE3(trajectory[i].matrix());
+            pt.put("trajectory_"+std::to_string(i), serialize(t));
+        }
+        boost::property_tree::write_json("state.json", pt);
+    }
 
+    void LoadState(const std::string &fn, std::vector<Eigen::Matrix4d>& trajectory)
+    {
+        boost::property_tree::ptree  pt;
+        boost::property_tree::read_json("state.json", pt);
+        const auto deserialize = [](const std::string str){
+            std::cout << "str " << str << std::endl;
+            std::stringstream ss(str);
+            Sophus::Vector6d l;
+            ss >> l[0];ss >> l[1];ss >> l[2];
+            ss >> l[3];ss >> l[4];ss >> l[5];
+            return Sophus::SE3d::exp(l);
+        };
+
+        for (int i =0; i < trajectory.size(); i++)
+        {
+            std::string str;
+            auto t = deserialize(pt.get<std::string>("trajectory_"+std::to_string(i)));
+            trajectory[i] = t.matrix();
+        }
+
+    }
 
     std::pair<double, Eigen::Matrix4d> loadLineCsv(std::string line){
         std::replace_if(std::begin(line), std::end(line),

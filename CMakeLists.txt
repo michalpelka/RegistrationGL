@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.15)
 project(RegistrationGL)
 
 set(CMAKE_CXX_STANDARD 14)
@@ -17,7 +17,7 @@ include_directories(
         ${OPENGL_INCLUDE_DIR} ${GLEW_INCLUDE_DIRS}
 )
 
-find_package(PCL REQUIRED COMPONENTS common io)
+find_package(PCL REQUIRED COMPONENTS common io registration)
 include_directories(${PCL_INCLUDE_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
@@ -27,6 +27,8 @@ include_directories( ${CERES_INCLUDE_DIRS})
 include_directories(3rd/Sophus)
 include_directories(3rd/imgui 3rd/imgui/backends)
 include_directories(3rd/ImGuizmo)
+
+find_package(TBB COMPONENTS tbbmalloc tbbmalloc_proxy tbb_preview)
 
 set(ImGui_Glut_src 3rd/imgui/imgui.cpp 3rd/imgui/imgui_demo.cpp 3rd/imgui/imgui_draw.cpp 3rd/imgui/imgui_widgets.cpp
         3rd/imgui/backends/imgui_impl_glut.cpp 3rd/imgui/backends/imgui_impl_opengl2.cpp)
@@ -60,7 +62,12 @@ set(GTSAM_LIBRARIES gtsam)   # TODO: automatic search libs
 
 add_executable(main main.cpp)
 
-
 target_link_libraries(main
-         ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam)
+         ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb)
 target_link_libraries(main GL_Codes )
+
+add_executable(main2 main2.cpp)
+
+target_link_libraries(main2
+        ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam)
+target_link_libraries(main2 GL_Codes )

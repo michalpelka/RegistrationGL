@@ -1,5 +1,7 @@
 #pragma once
 #include "../GL/glwrapper.h"
+#include <pcl/filters/approximate_voxel_grid.h>
+
 namespace structs{
     std::shared_ptr<float[]> pclToBuffer(const pcl::PointCloud<pcl::PointXYZI>::Ptr cloud, int &len, float scale)
     {
@@ -23,6 +25,13 @@ namespace structs{
     };
     struct KeyFrame{
 
+        void subsample(float leaf_size){
+            cloud_subsample = pcl::PointCloud<pcl::PointXYZI>::Ptr(new pcl::PointCloud<pcl::PointXYZI>());
+            pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
+            approximate_voxel_filter.setLeafSize (leaf_size,leaf_size,leaf_size);
+            approximate_voxel_filter.setInputCloud (cloud);
+            approximate_voxel_filter.filter (*cloud_subsample);
+        }
         KeyFrame(pcl::PointCloud<pcl::PointXYZI>::Ptr cloud, Eigen::Matrix4d mat):
                 cloud(cloud), mat(mat),data(pclToBuffer(cloud, len, 1.0f)),
                 vb(data.get(), len* sizeof(float)),
@@ -33,10 +42,13 @@ namespace structs{
             layoutPc.Push<float>(3);
             layoutPc.Push<float>(1); // intensity
             va.AddBuffer(vb, layoutPc);
+            //subsample(0.1);
         }
 
 
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
+        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_subsample;
+
         Eigen::Matrix4d mat;
         double timestamp;
         const std::shared_ptr<float[]> data;
