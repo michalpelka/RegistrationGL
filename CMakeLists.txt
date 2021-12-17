@@ -17,6 +17,7 @@ include_directories(
         ${OPENGL_INCLUDE_DIR} ${GLEW_INCLUDE_DIRS}
 )
 
+find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(PCL REQUIRED COMPONENTS common io registration)
 include_directories(${PCL_INCLUDE_DIRS})
 add_definitions(${PCL_DEFINITIONS})
@@ -60,14 +61,9 @@ include_directories(${GTSAM_INCLUDE_DIR})
 set(GTSAM_LIBRARIES gtsam)   # TODO: automatic search libs
 
 
-add_executable(main main.cpp)
+add_executable(slamGL main.cpp)
 
-target_link_libraries(main
-         ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb)
-target_link_libraries(main GL_Codes )
+target_link_libraries(slamGL
+         ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb Boost::program_options)
+target_link_libraries(slamGL GL_Codes )
 
-add_executable(main2 main2.cpp)
-
-target_link_libraries(main2
-        ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam)
-target_link_libraries(main2 GL_Codes )

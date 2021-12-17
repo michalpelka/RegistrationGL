@@ -28,6 +28,7 @@
 
 #include <pcl/kdtree/kdtree_flann.h>
 
+#include <boost/program_options.hpp>
 #include <thread>
 class UnaryFactor: public gtsam::NoiseModelFactor1<gtsam::Pose3> {
     double mx_, my_; ///< X and Y measurements
@@ -92,7 +93,7 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
 {
     std::mutex mutex_lck;
     icp_results.clear();
-
+    int ndt_results = 0;
     tbb::parallel_for(tbb::blocked_range<size_t>(1,keyframes.size()),[&](const tbb::blocked_range<size_t>& r) {
         for (long i=r.begin();i<r.end();++i) {
             int prev = i - 1;
@@ -115,8 +116,7 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
             pcl::PointCloud<pcl::PointXYZI> t;
             Eigen::Matrix4f increment_f = increment.cast<float>();
             ndt.align(t, increment_f);
-            std::cout << "Normal Distributions Transform has converged:" << ndt.hasConverged()
-                      << " score: " << ndt.getFitnessScore() << std::endl;
+
             if (ndt.hasConverged()) {
                 icp_result r;
                 r.increment = ndt.getFinalTransformation().cast<double>();
@@ -124,12 +124,13 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                 r.keyframeNext = current;
                 std::lock_guard<std::mutex> lck(mutex_lck);
                 icp_results.push_back(r);
+                std::cout << "icp_results " << icp_results.size() <<std::endl;
             }
         }
 //                std::cout << increment.cast<float>() - ndt.getFinalTransformation() << std::endl;
 //                keyframes[1]->mat = keyframes[0]->mat * ndt.getFinalTransformation().cast<double>();
     });
-
+    std::cout << "loop closing"<<std::endl;
     std::vector<std::pair<int,int>> candidates;
     tbb::parallel_for(tbb::blocked_range<size_t>(1,keyframes.size()),[&](const tbb::blocked_range<size_t>& r) {
         for (long i=r.begin();i<r.end();++i) {
@@ -142,7 +143,7 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                 const auto k2 = keyframes[j]->mat.col(3).head<3>();
                 double distance = (k1-k2).norm();
                 if (distance < loop_distance){
-                    std::cout << "Candidate " << k1 << ":"<<k2 <<"(" << distance << ")" << std::endl;
+
                     Eigen::Matrix4d increment = keyframes[prev]->mat.inverse() * keyframes[current]->mat;
                     pcl::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
                     // Setting scale dependent NDT parameters
@@ -161,8 +162,6 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                     pcl::PointCloud<pcl::PointXYZI> t;
                     Eigen::Matrix4f increment_f = increment.cast<float>();
                     ndt.align(t, increment_f);
-                    std::cout << "Normal Distributions Transform has converged:" << ndt.hasConverged()
-                              << " score: " << ndt.getFitnessScore() << std::endl;
                     if (ndt.hasConverged()) {
                         icp_result r;
                         r.increment = ndt.getFinalTransformation().cast<double>();
@@ -170,14 +169,31 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                         r.keyframeNext = current;
                         std::lock_guard<std::mutex> lck(mutex_lck);
                         icp_results.push_back(r);
+                        std::cout << "icp_results " << icp_results.size()  <<"(" << distance << ")" <<std::endl;
                     }
                 }
             }
         }
     });
 }
-
+namespace po = boost::program_options;
 int main(int argc, char **argv) {
+
+    po::options_description desc("Allowed options");
+    desc.add_options()
+            ("help", "produce help message")
+            ("dataset", po::value<std::string>(), "dataset")
+            ("skip", po::value<int>(), "skip")
+            ;
+
+    po::variables_map vm;
+    po::store(po::parse_command_line(argc, argv, desc), vm);
+    po::notify(vm);
+
+    if (vm.count("help")) {
+        std::cout << desc << "\n";
+        return 1;
+    }
 
     std::vector<icp_result> icp_results;
     std::vector<icp_result> icp_loop_closing;
@@ -226,11 +242,11 @@ int main(int argc, char **argv) {
 
     // load matrix
     std::vector<structs::edge> Edges;
-    const std::string dataset{"/media/michal/ext/garaz2/scans/*.pcd"};
-    //const std::string dataset{/media/michal/ext/npp_scans/"};
+    //const std::string dataset{"/media/michal/ext/garaz2/scans/*.pcd"};
+    const std::string dataset{vm["dataset"].as<std::string>()};
     std::vector<std::string> fns_raw = my_utils::glob(dataset);
     std::vector<std::string> fns;
-    for (int i =0; i < fns_raw.size(); i+=5)
+    for (int i =0; i < fns_raw.size(); i+=vm["skip"].as<int>())
     {
         fns.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-4));
     }
@@ -253,7 +269,7 @@ int main(int argc, char **argv) {
 
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_subsample(new pcl::PointCloud<pcl::PointXYZI>());
         pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
-        approximate_voxel_filter.setLeafSize (0.2,0.2,0.2);
+        approximate_voxel_filter.setLeafSize (0.1,0.1,0.1);
         approximate_voxel_filter.setInputCloud (cloud);
         approximate_voxel_filter.filter (*cloud_subsample);
 
@@ -521,7 +537,7 @@ int main(int argc, char **argv) {
                     auto pt1 =  Eigen::Affine3d(keyframes[i]->mat).translation();
                     auto pt2 =  Eigen::Affine3d(keyframes[j]->mat).translation();
                     double d = (pt1-pt2).norm();
-                    if (d<3.0) {
+                    if (d<5.0) {
                         pairs.push_back(std::pair<int, int>(i, j));
                     }
                 }
