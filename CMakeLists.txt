@@ -61,9 +61,16 @@ include_directories(${GTSAM_INCLUDE_DIR})
 set(GTSAM_LIBRARIES gtsam)   # TODO: automatic search libs
 
 
-add_executable(slamGL main.cpp)
+add_executable(slamGL main.cpp utils.cpp)
 
 target_link_libraries(slamGL
-         ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb Boost::program_options)
+        ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb Boost::program_options)
 target_link_libraries(slamGL GL_Codes )
+
+
+add_executable(ndt_test ndt_test.cpp)
+
+target_link_libraries(ndt_test
+        ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb Boost::program_options)
+target_link_libraries(ndt_test GL_Codes )
 

@@ -18,11 +18,6 @@ namespace structs{
     }
 
 
-    struct edge{
-        Eigen::Matrix4d se3;
-        int id1;
-        int id2;
-    };
     struct KeyFrame{
 
         void subsample(float leaf_size){

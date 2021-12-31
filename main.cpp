@@ -30,26 +30,13 @@
 
 #include <boost/program_options.hpp>
 #include <thread>
-class UnaryFactor: public gtsam::NoiseModelFactor1<gtsam::Pose3> {
-    double mx_, my_; ///< X and Y measurements
-
-public:
-    UnaryFactor(gtsam::Key j, double x, double y, const gtsam::SharedNoiseModel& model):
-        gtsam::NoiseModelFactor1<gtsam::Pose3>(model, j), mx_(x), my_(y) {}
-
-    gtsam::Vector evaluateError(const gtsam::Pose3& q,
-                         boost::optional<gtsam::Matrix&> H = boost::none) const
-    {
-        if (H) (*H) = (gtsam::Matrix(2,6)<< 0,0,0,1,0,0, 0,0,0,0,1,0  ).finished();
-        return (gtsam::Vector(2) << q.x() - mx_, q.y() - my_).finished();
-    }
-};
-
 glm::vec2 clicked_point;
 glm::vec3 view_translation{ 0,0,-30 };
 float rot_x =0.0f;
 float rot_y =0.0f;
-
+std::vector<Eigen::Matrix4d> trajectory;
+std::vector<std::unique_ptr<structs::KeyFrame>> keyframes;
+std::unique_ptr<structs::KeyFrame> gt_keyframe{nullptr};
 
 void cursor_calback(GLFWwindow* window, double xpos, double ypos)
 {
@@ -78,8 +65,6 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
     glViewport(0, 0, width, height);
 }
 
-std::vector<Eigen::Matrix4d> trajectory;
-std::vector<std::unique_ptr<structs::KeyFrame>> keyframes;
 
 struct icp_result{
     Eigen::Matrix4d increment;
@@ -124,7 +109,7 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                 r.keyframeNext = current;
                 std::lock_guard<std::mutex> lck(mutex_lck);
                 icp_results.push_back(r);
-                std::cout << "icp_results " << icp_results.size() <<std::endl;
+                std::cout << "icp_results " << icp_results.size()<<" "<< prev <<" -> " << current <<std::endl;
             }
         }
 //                std::cout << increment.cast<float>() - ndt.getFinalTransformation() << std::endl;
@@ -169,21 +154,23 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                         r.keyframeNext = current;
                         std::lock_guard<std::mutex> lck(mutex_lck);
                         icp_results.push_back(r);
-                        std::cout << "icp_results " << icp_results.size()  <<"(" << distance << ")" <<std::endl;
+                        std::cout << "icp_results " << icp_results.size()  <<"(" << distance << ")" << prev <<" -> " << current <<std::endl;
                     }
                 }
             }
         }
     });
 }
-namespace po = boost::program_options;
-int main(int argc, char **argv) {
 
+int main(int argc, char **argv) {
+    namespace po = boost::program_options;
     po::options_description desc("Allowed options");
     desc.add_options()
             ("help", "produce help message")
             ("dataset", po::value<std::string>(), "dataset")
+            ("gt", po::value<std::string>(), "ground truth")
             ("skip", po::value<int>(), "skip")
+            ("json", po::value<std::string>(), "json state")
             ;
 
     po::variables_map vm;
@@ -197,6 +184,7 @@ int main(int argc, char **argv) {
 
     std::vector<icp_result> icp_results;
     std::vector<icp_result> icp_loop_closing;
+    std::map<int,Eigen::Matrix4d> icp_gt_resutls;
 
     std::thread processing_thread;
     GLFWwindow *window;
@@ -240,9 +228,9 @@ int main(int argc, char **argv) {
     ImGui_ImplGlfw_InitForOpenGL(window, false);
     ImGui_ImplOpenGL3_Init(glsl_version);
 
+    const std::string json_config = (vm.count("json")>0)?(vm["json"].as<std::string>()):"config.json";
+    std::cout << "json_config " << json_config << std::endl;
     // load matrix
-    std::vector<structs::edge> Edges;
-    //const std::string dataset{"/media/michal/ext/garaz2/scans/*.pcd"};
     const std::string dataset{vm["dataset"].as<std::string>()};
     std::vector<std::string> fns_raw = my_utils::glob(dataset);
     std::vector<std::string> fns;
@@ -250,7 +238,6 @@ int main(int argc, char **argv) {
     {
         fns.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-4));
     }
-
 
     double off_x = 0;
     double off_y = 0;
@@ -277,6 +264,17 @@ int main(int argc, char **argv) {
     }
     const auto initial_poses = trajectory;
 
+    if (vm.count("gt"))
+    {
+        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZI>);
+        pcl::io::loadPCDFile<pcl::PointXYZI>(vm["gt"].as<std::string>(),*cloud);
+        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_subsample(new pcl::PointCloud<pcl::PointXYZI>());
+        pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
+        approximate_voxel_filter.setLeafSize (0.1,0.1,0.1);
+        approximate_voxel_filter.setInputCloud (cloud);
+        approximate_voxel_filter.filter (*cloud_subsample);
+        gt_keyframe = std::make_unique<structs::KeyFrame>(cloud_subsample,  Eigen::Matrix4d::Identity());
+    }
 
     Eigen::Matrix4f imgizmo {Eigen::Matrix4f::Identity()};
     int im_edited_frame = 1;
@@ -284,6 +282,7 @@ int main(int argc, char **argv) {
     float im_ndt_res = 0.5;
     float im_loop = 1.5;
     float im_gui_odometry = 1;
+    bool im_draw_only_edited{false};
     while (!glfwWindowShouldClose(window)) {
         GLCall(glEnable(GL_DEPTH_TEST));
         GLCall(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
@@ -310,8 +309,7 @@ int main(int argc, char **argv) {
                 imgizmo = keyframes[im_edited_frame]->mat.cast<float>();
             }
             ImGuizmo::AllowAxisFlip(false);
-            ImGuizmo::Manipulate(&model_rotation_3[0][0], &proj[0][0], ImGuizmo::TRANSLATE|ImGuizmo::ROTATE, ImGuizmo::LOCAL, imgizmo.data(), NULL);
-
+            ImGuizmo::Manipulate(&model_rotation_3[0][0], &proj[0][0], ImGuizmo::TRANSLATE|ImGuizmo::ROTATE_Z|ImGuizmo::ROTATE_X|ImGuizmo::ROTATE_Y, ImGuizmo::LOCAL, imgizmo.data(), NULL);
         }
 
         im_edited_frame_old = im_edited_frame;
@@ -319,7 +317,15 @@ int main(int argc, char **argv) {
         shader.Bind(); // bind shader to apply uniform
         shader.setUniformMat4f("u_MVP", proj * model_rotation_3);
         renderer.Draw(va, ib, shader, GL_LINES);
-//        // draw reference frame
+        // render gt
+        if (gt_keyframe) {
+            glm::mat4 local;
+            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
+            map_local = gt_keyframe->mat.cast<float>();
+            shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
+            renderer.Draw(va, ib, shader, GL_LINES);
+        }
+        // draw reference frame
         for (const auto &k : keyframes) {
             glm::mat4 local;
             Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
@@ -329,6 +335,9 @@ int main(int argc, char **argv) {
         }
         GLCall(glPointSize(1));
         for ( int i =0; i < keyframes.size(); i++) {
+            if (im_draw_only_edited && i != im_edited_frame){
+                continue;
+            }
             const auto &k = keyframes[i];
             shader_pc.Bind();
             glm::mat4 local;
@@ -345,6 +354,16 @@ int main(int argc, char **argv) {
             renderer.DrawArray(k->va, shader_pc, GL_POINTS, k->cloud->size());
         }
 
+        if (gt_keyframe) {
+            shader_pc.Bind();
+            glm::mat4 local;
+            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
+            map_local = gt_keyframe->mat.cast<float>();
+            shader_pc.setUniform4f("u_COLORPC", 0,0,1,1);
+            shader_pc.setUniformMat4f("u_MVPPC", proj * model_rotation_3 * local );
+            renderer.DrawArray(gt_keyframe->va, shader_pc, GL_POINTS, gt_keyframe->cloud->size());
+        }
+
         ImGui::Begin("SLAM Demo");
         ImGui::InputInt("Edited_frame",&im_edited_frame);
         ImGui::SameLine();
@@ -354,7 +373,7 @@ int main(int argc, char **argv) {
         if(ImGui::Button("load")) {
             std::vector<Eigen::Matrix4d> m_trajectory;
             m_trajectory.resize(keyframes.size());
-            my_utils::LoadState("state.json", m_trajectory);
+            my_utils::LoadState(json_config, m_trajectory, icp_gt_resutls);
             for (int i =0; i < keyframes.size(); i++)
             {
                 keyframes[i]->mat = m_trajectory[i];
@@ -368,7 +387,7 @@ int main(int argc, char **argv) {
             {
                 m_trajectory[i] = keyframes[i]->mat;
             }
-            my_utils::saveState("state.json", m_trajectory);
+            my_utils::saveState(json_config, m_trajectory, icp_gt_resutls);
         }
 
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
@@ -387,12 +406,18 @@ int main(int argc, char **argv) {
             using namespace std;
             using namespace gtsam;
             NonlinearFactorGraph graph;
+            if(icp_gt_resutls.empty()) {
+                auto priorModel = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
 
-            auto priorModel = noiseModel::Diagonal::Variances(
-                    (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
+                graph.add(PriorFactor<Pose3>(0, Pose3(keyframes[0]->mat), priorModel));
+            }
+            for (auto const& x : icp_gt_resutls ){
+                auto priorModel = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6).finished());
 
-            graph.add(PriorFactor<Pose3>(0, Pose3(keyframes[0]->mat), priorModel));
-
+                graph.add(PriorFactor<Pose3>(x.first, Pose3(x.second), priorModel));
+            }
             //apply imu
             for (int i =0; i < keyframes.size(); i++) {
                 auto priorModel = noiseModel::Diagonal::Variances(
@@ -435,6 +460,7 @@ int main(int argc, char **argv) {
                 Eigen::Matrix4d update =  icp_results[i].increment;
                 graph.emplace_shared<BetweenFactor<Pose3> >(prev, next, Pose3(orthogonize(update)), odometryNoise);
             }
+
         }
 
         if (ImGui::Button("gtsam-relax")){
@@ -448,6 +474,12 @@ int main(int argc, char **argv) {
             graph.add(PriorFactor<Pose3>(0, Pose3(keyframes[0]->mat), priorModel));
             graph.add(PriorFactor<Pose3>(im_edited_frame, Pose3(keyframes[im_edited_frame]->mat), priorModel));
 
+            for (int i =1; i < im_edited_frame+1; i++){
+                auto odometryNoise = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1).finished());
+                Eigen::Matrix4d update = trajectory[i-1].inverse() * trajectory[i];
+                graph.emplace_shared<BetweenFactor<Pose3> >(i-1, i, Pose3(orthogonize(update)), odometryNoise);
+            }
             for (int i =1; i < im_edited_frame+1; i++){
                 auto odometryNoise = noiseModel::Diagonal::Variances(
                         (Vector(6) << 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1).finished());
@@ -574,11 +606,79 @@ int main(int argc, char **argv) {
             }
 
         }
+        ImGui::Checkbox("draw edited only", &im_draw_only_edited);
+
+        if (gt_keyframe) {
+            if (ImGui::Button("register current scan to gt")) {
+                Eigen::Matrix4d increment = keyframes.at(im_edited_frame)->mat;
+                pcl::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
+                // Setting scale dependent NDT parameters
+                // Setting minimum transformation difference for termination condition.
+                ndt.setTransformationEpsilon(0.01);
+                // Setting maximum step size for More-Thuente line search.
+                ndt.setStepSize(0.1);
+                //Setting Resolution of NDT grid structure (VoxelGridCovariance).
+                ndt.setResolution(0.5);
+
+                ndt.setMaximumIterations(100);
+
+                ndt.setInputSource(keyframes.at(im_edited_frame)->cloud);
+                ndt.setInputTarget(gt_keyframe->cloud);
+
+                pcl::PointCloud<pcl::PointXYZI> t;
+                Eigen::Matrix4f increment_f = increment.cast<float>();
+                ndt.align(t, increment_f);
+
+                if (ndt.hasConverged()) {
+                    imgizmo = ndt.getFinalTransformation().cast<float>();
+                    keyframes[im_edited_frame]->mat = ndt.getFinalTransformation().cast<double>();
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("add constraint")) {
+                icp_gt_resutls[im_edited_frame] =  keyframes[im_edited_frame]->mat;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("relax to gt")){
+                using namespace std;
+                using namespace gtsam;
+                NonlinearFactorGraph graph;
+                for (auto const& x : icp_gt_resutls ){
+                    auto priorModel = noiseModel::Diagonal::Variances(
+                            (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
+
+                    graph.add(PriorFactor<Pose3>(x.first, Pose3(x.second), priorModel));
+                }
+                for (int i =1; i < keyframes.size(); i++){
+                    auto odometryNoise = noiseModel::Diagonal::Variances(
+                            (Vector(6) << 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1).finished());
+                    Eigen::Matrix4d update = trajectory[i-1].inverse() * trajectory[i];
+                    graph.emplace_shared<BetweenFactor<Pose3> >(i-1, i, Pose3(orthogonize(update)), odometryNoise);
+                }
+
+                Values initial;
+                for (int i =0; i < keyframes.size(); i++){
+                    initial.insert(i, Pose3(orthogonize(keyframes[i]->mat)));
+                }
+                Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
+                for (int i =0; i < keyframes.size(); i++){
+                    auto v =  result.at<Pose3>(i);
+                    keyframes[i]->mat =v.matrix();
+                }
+            }
+            for (auto const& x : icp_gt_resutls ){
+                ImGui::Text("constraint %d", x.first);
+                ImGui::SameLine();
+                if(ImGui::Button(("r"+std::to_string(x.first)).c_str())){
+                    const auto it=icp_gt_resutls.find(x.first);
+                    icp_gt_resutls.erase(it);
+                    break;
+                }
+            }
+        }
         ImGui::End();
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
         ImGui::Render();
-
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
         glfwPollEvents();
