@@ -102,6 +102,7 @@ unsigned int Shader::CompileShader(unsigned int type, const std::string& source)
 		glGetShaderInfoLog(id, length, &length, message);
 		std::cout << "Failed to compile " << std::endl;
 		std::cout << message << std::endl;
+		std::abort();
 		glDeleteShader(id);
 		return 0;
 	}

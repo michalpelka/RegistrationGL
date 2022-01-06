@@ -25,7 +25,6 @@
 #include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/registration/ndt.h>
 
-
 #include <pcl/kdtree/kdtree_flann.h>
 
 #include <boost/program_options.hpp>
@@ -35,6 +34,14 @@ glm::vec3 view_translation{ 0,0,-30 };
 float rot_x =0.0f;
 float rot_y =0.0f;
 std::vector<Eigen::Matrix4d> trajectory;
+std::vector<Eigen::Matrix4d> trajectory_noskip;
+std::vector<double> trajectory_ts;
+std::vector<double> trajectory_ts_noskip;
+
+std::vector<Eigen::Matrix4d> trajectory_interpolated;
+std::vector<double> trajectory_ts_interpolated;
+
+
 std::vector<std::unique_ptr<structs::KeyFrame>> keyframes;
 std::unique_ptr<structs::KeyFrame> gt_keyframe{nullptr};
 
@@ -161,18 +168,67 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
         }
     });
 }
+struct gt_overlay{
+
+    const std::vector<float> positions
+            {
+                    -1.f, -1.f, 0.0f, 0.0f,// bottom left
+                     1.f, -1.f, 1.0f, 0.0f,// bottom right
+                     1.f,  1.f, 1.0f, 1.0f,// top right
+                    -1.f,  1.f, 0.0f, 1.0f,// top left
+            };
+
+    const std::vector<unsigned int> indicies {
+            0,1,2, 2,3,0,
+    };
+
+
+    std::string fn;
+    Texture texture;
+    Eigen::Vector2d  real_size;
+    Eigen::Vector2d  img_size;
+
+    VertexBuffer vb;
+    IndexBuffer ib;
+    VertexArray va;
+    Shader shader;
+public:
+    gt_overlay(const std::string& fn):fn(fn), texture(fn),
+    vb(positions.data(),positions.size()* sizeof(float)),
+    ib(indicies.data(), indicies.size()),
+    va(),
+    shader(shader_simple_tex_v,shader_simple_tex_f)
+    {
+        VertexBufferLayout layout;
+        layout.Push<float>(2);
+        layout.Push<float>(2);
+        va.AddBuffer(vb,layout);
+    }
+    explicit operator bool() const {
+        return fn.length();
+    }
+
+};
 
 int main(int argc, char **argv) {
+    std::shared_ptr<gt_overlay> gt_img_overlay;
+    Eigen::Affine3d laser_offset{Eigen::Affine3d::Identity()};
+    laser_offset.translation() = Eigen::Vector3d{0.2,0.0,0.5};
+    auto Q = Eigen::Quaterniond{ 0.96593,0.0, 0.0, -0.25882};
+    Q.normalize();
+    laser_offset.rotate(Q);
+
     namespace po = boost::program_options;
     po::options_description desc("Allowed options");
     desc.add_options()
             ("help", "produce help message")
             ("dataset", po::value<std::string>(), "dataset")
             ("gt", po::value<std::string>(), "ground truth")
+            ("gt_img", po::value<std::string>(), "ground truth image")
+            ("gt_img_length", po::value<int>(), "ground truth image length")
             ("skip", po::value<int>(), "skip")
             ("json", po::value<std::string>(), "json state")
             ;
-
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -234,6 +290,11 @@ int main(int argc, char **argv) {
     const std::string dataset{vm["dataset"].as<std::string>()};
     std::vector<std::string> fns_raw = my_utils::glob(dataset);
     std::vector<std::string> fns;
+    std::vector<std::string> fns_noskip;
+    for (int i =0; i < fns_raw.size(); i+=1)
+    {
+        fns_noskip.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-4));
+    }
     for (int i =0; i < fns_raw.size(); i+=vm["skip"].as<int>())
     {
         fns.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-4));
@@ -246,6 +307,11 @@ int main(int argc, char **argv) {
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZI>);
         pcl::io::loadPCDFile<pcl::PointXYZI>(fn+".pcd",*cloud);
         trajectory.push_back(my_utils::loadMat(fn+".txt"));
+        double ts = 0;
+        std::ifstream  ifn (fn+".ts");
+        ifn >> ts;
+        trajectory_ts.push_back(ts);
+
         if (off_x == 0)
         {
             off_x = trajectory.front()(0,3);
@@ -262,8 +328,25 @@ int main(int argc, char **argv) {
 
         keyframes.emplace_back(std::make_unique<structs::KeyFrame>(cloud_subsample,  trajectory.back()));
     }
+    for (const auto fn : fns_noskip){
+        trajectory_noskip.push_back(my_utils::loadMat(fn+".txt"));
+        double ts = 0;
+        std::ifstream  ifn (fn+".ts");
+        ifn >> ts;
+        trajectory_ts_noskip.push_back(ts);
+        trajectory_noskip.back()(0,3) -= off_x;
+        trajectory_noskip.back()(1,3) -= off_y;
+
+    }
+
     const auto initial_poses = trajectory;
 
+    // load texture
+    if (vm.count("gt_img")>0){
+        const std::string fn(vm["gt_img"].as<std::string>());
+        gt_img_overlay = std::make_shared<gt_overlay>(fn);
+    }
+    
     if (vm.count("gt"))
     {
         pcl::PointCloud<pcl::PointXYZI>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZI>);
@@ -314,6 +397,24 @@ int main(int argc, char **argv) {
 
         im_edited_frame_old = im_edited_frame;
 
+        if (gt_img_overlay){
+            gt_img_overlay->shader.Bind();
+            gt_img_overlay->texture.Bind(1);
+            glm::mat4 local;
+            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
+            map_local = Eigen::Matrix4f::Identity();
+            const float larger = std::min(gt_img_overlay->texture.GetWidth(),gt_img_overlay->texture.GetHeight());
+            map_local(0,0) = static_cast<float>(gt_img_overlay->texture.GetWidth())*44.1/larger;
+            map_local(1,1) = static_cast<float>(gt_img_overlay->texture.GetHeight())*44.1/larger;
+            map_local(2,2) = 1;
+
+            gt_img_overlay->shader.setUniformMat4f("u_MVP5", proj * model_rotation_3 * local );
+            gt_img_overlay->shader.setUniform1i("u_Texture", 1);
+            renderer.Draw(gt_img_overlay->va, gt_img_overlay->ib, gt_img_overlay->shader, GL_TRIANGLES);
+            gt_img_overlay->texture.Unbind();
+            gt_img_overlay->shader.Unbind();
+        }
+
         shader.Bind(); // bind shader to apply uniform
         shader.setUniformMat4f("u_MVP", proj * model_rotation_3);
         renderer.Draw(va, ib, shader, GL_LINES);
@@ -325,11 +426,20 @@ int main(int argc, char **argv) {
             shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
             renderer.Draw(va, ib, shader, GL_LINES);
         }
+
         // draw reference frame
         for (const auto &k : keyframes) {
             glm::mat4 local;
             Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
             map_local = k->mat.cast<float>();
+            shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
+            renderer.Draw(va, ib, shader, GL_LINES);
+        }
+        for (const auto &p : trajectory_interpolated){
+            glm::mat4 local;
+            glm::mat4 scale = glm::mat4(0.01f);
+            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
+            map_local = p.cast<float>();
             shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
             renderer.Draw(va, ib, shader, GL_LINES);
         }
@@ -389,7 +499,84 @@ int main(int argc, char **argv) {
             }
             my_utils::saveState(json_config, m_trajectory, icp_gt_resutls);
         }
+        ImGui::SameLine();
+        if(ImGui::Button("iterpolate-slerp")) {
+            trajectory_interpolated.clear();
+            trajectory_ts_interpolated.clear();
+            for (int i =0; i< keyframes.size()-1; i++){
+                const Eigen::Affine3d curr(keyframes[i]->mat);
+                const Eigen::Affine3d next(keyframes[i+1]->mat);
+                const double ts1(trajectory_ts[i]);
+                const double ts2(trajectory_ts[i+1]);
+                const Eigen::Quaterniond q1(curr.rotation());
+                const Eigen::Quaterniond q2(next.rotation());
 
+                const Eigen::Vector3d t1(curr.translation());
+                const Eigen::Vector3d t2(next.translation());
+
+
+                for (float r = 0; r < 1.0;r +=0.05){
+                    Eigen::Quaterniond qr = q1.slerp(r, q2);
+                    Eigen::Vector3d tr = t1 + r*(t2-t1);
+                    Eigen::Affine3d interpolated(Eigen::Affine3f::Identity());
+                    interpolated.translate(tr);
+                    interpolated.rotate(qr);
+                    double ts_r = ts1 + r * (ts2 - ts1);
+                    trajectory_interpolated.push_back((interpolated*laser_offset.inverse()).matrix());
+                    trajectory_ts_interpolated.push_back(ts_r);
+                }
+
+                std::ofstream f("/tmp/trajectory_gt.txt");
+                for (int i=0; i< trajectory_interpolated.size(); i++){
+                    const Sophus::SE3d tt = Sophus::SE3d::fitToSE3(trajectory_interpolated[i]);
+                    const auto tt_log = tt.log();
+                    f << std::fixed << trajectory_ts_interpolated[i] << " "<< tt_log[0]<<" " << tt_log[1] << " " << tt_log[2] << " " <<tt_log[3] << " " <<tt_log[4] << " " <<tt_log[5] <<std::endl;
+                }
+                f.close();
+
+            }
+        }
+        ImGui::SameLine();
+        if(ImGui::Button("iterpolate-gtsam")) {
+            trajectory_interpolated.clear();
+            trajectory_ts_interpolated.clear();
+            using namespace std;
+            using namespace gtsam;
+            NonlinearFactorGraph graph;
+            for (int i =1; i < trajectory_noskip.size(); i++){
+                auto odometryNoise = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1).finished());
+                Eigen::Matrix4d update = trajectory_noskip[i-1].inverse() * trajectory_noskip[i];
+                graph.emplace_shared<BetweenFactor<Pose3> >(i-1, i, Pose3(orthogonize(update)), odometryNoise);
+            }
+
+            for (int i =1; i < keyframes.size(); i++){
+                auto priorModel = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
+                graph.add(PriorFactor<Pose3>(i*6, Pose3(keyframes[i]->mat), priorModel));
+            }
+            graph.print("\nFactor Graph:\n");  // print
+            Values initial;
+            for (int i =0; i < trajectory_noskip.size(); i++){
+                initial.insert(i, Pose3(orthogonize( trajectory_noskip[i])));
+            }
+            Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
+            result.print("Final Result:\n");
+            for (int i =0; i < trajectory_noskip.size(); i++){
+                auto v =  result.at<Pose3>(i);
+                trajectory_ts_interpolated.push_back(trajectory_ts_noskip[i]);
+                trajectory_interpolated.push_back(v.matrix()*laser_offset.inverse().matrix());
+            }
+
+            std::ofstream f("/tmp/trajectory_gt.txt");
+            for (int i=0; i< trajectory_interpolated.size(); i++){
+                const Sophus::SE3d tt = Sophus::SE3d::fitToSE3(trajectory_interpolated[i]);
+                const auto tt_log = tt.log();
+                f << std::fixed << trajectory_ts_interpolated[i] << " "<< tt_log[0]<<" " << tt_log[1] << " " << tt_log[2] << " " <<tt_log[3] << " " <<tt_log[4] << " " <<tt_log[5] <<std::endl;
+            }
+            f.close();
+
+        }
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
         if(ImGui::Button("reset view")){
             rot_x =0.0f;

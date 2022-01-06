@@ -18,6 +18,7 @@ namespace gl_primitives
         0,1,2,3,4,5
     };
 
+
     const std::vector<float> plane_vertex
     {
             -0.5f,-0.5f,0.0f,  1.0f,0.0f,0.0f,

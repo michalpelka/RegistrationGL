@@ -86,3 +86,37 @@ void main()
 	color = v_color;
 };
 )""";
+
+
+const char* shader_simple_tex_v=R"""(
+//shader_simple_tex_v
+#version 330 core
+layout(location = 0) in vec4 position;
+layout(location = 1) in vec2 aTexCoord;
+
+out vec2 TexCoord;
+uniform mat4 u_MVP5;
+
+void main()
+{
+  gl_Position = u_MVP5 * position;
+  TexCoord = aTexCoord;
+};
+)""";
+
+const char* shader_simple_tex_f=R"""(
+//shader_simple_tex_f
+#version 330 core
+uniform vec4 u_Color;
+
+layout(location = 0) out vec4 color;
+in vec2 TexCoord;
+
+uniform sampler2D u_Texture;
+void main()
+{
+	//color = v_color;
+	//color = vec4(0,TexCoord[0],TexCoord[1]);
+	color = texture(u_Texture, TexCoord);
+};
+)""";

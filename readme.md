@@ -1,4 +1,5 @@
-# Tool to manually compensate odometry error.
+# Tool to register data using NDT and GTSAM.
+
 
 # Dependencies
 ### GTSAM
@@ -10,3 +11,10 @@ GTSAM_BUILD_WITH_MARCH_NATIVE:BOOL=OFF
 ```
 ### Ceres
 Build / or install from APT
+
+### PCL
+Build / or install from APT
+
+
+# Screenshot 
+![screenshot](doc/screenshot.png)
