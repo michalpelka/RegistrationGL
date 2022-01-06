@@ -31,7 +31,7 @@
 #include <thread>
 glm::vec2 clicked_point;
 glm::vec3 view_translation{ 0,0,-30 };
-float rot_x =0.0f;
+float rot_x =M_PI/2;
 float rot_y =0.0f;
 std::vector<Eigen::Matrix4d> trajectory;
 std::vector<Eigen::Matrix4d> trajectory_noskip;
@@ -366,6 +366,10 @@ int main(int argc, char **argv) {
     float im_loop = 1.5;
     float im_gui_odometry = 1;
     bool im_draw_only_edited{false};
+    bool im_top_ortho{false};
+    float im_ortho_scale = 50;
+
+
     while (!glfwWindowShouldClose(window)) {
         GLCall(glEnable(GL_DEPTH_TEST));
         GLCall(glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
@@ -381,11 +385,23 @@ int main(int argc, char **argv) {
         int width, height;
         glfwGetWindowSize(window, &width, &height);
         glm::mat4 scale = glm::mat4(0.1f);
-        glm::mat4 proj = glm::perspective(30.f, 1.0f*width/height, 0.1f, 1000.0f);
-        glm::mat4 model_translate = glm::translate(glm::mat4(1.0f), view_translation);
-        glm::mat4 model_rotation_1 = glm::rotate(model_translate, rot_x, glm::vec3(1.0f, 0.0f, 0.0f));
-        glm::mat4 model_rotation_2 = glm::rotate(model_rotation_1, rot_y, glm::vec3(0.0f, 0.0f, 1.0f));
-        glm::mat4 model_rotation_3 = glm::rotate(model_rotation_2, (float)(0.5f*M_PI), glm::vec3(-1.0f, 0.0f, 0.0f));
+        glm::mat4 proj;
+        glm::mat4 model_rotation_3;
+        if (im_top_ortho) {
+            proj = glm::ortho(-im_ortho_scale* width / height, im_ortho_scale * width / height, -im_ortho_scale, im_ortho_scale, -100.0f,
+                                        100.0f);
+            glm::mat4 model_translate = glm::translate(glm::mat4(1.0f), view_translation);
+            glm::mat4 model_rotation_1 = glm::rotate(model_translate, float(M_PI/2), glm::vec3(1.0f, 0.0f, 0.0f));
+            model_rotation_3 = glm::rotate(model_rotation_1, (float)(0.5f*M_PI), glm::vec3(-1.0f, 0.0f, 0.0f));
+
+        }else{
+            proj = glm::perspective(30.f, 1.0f*width/height, 0.1f, 1000.0f);
+            glm::mat4 model_translate = glm::translate(glm::mat4(1.0f), view_translation);
+            glm::mat4 model_rotation_1 = glm::rotate(model_translate, rot_x, glm::vec3(1.0f, 0.0f, 0.0f));
+            glm::mat4 model_rotation_2 = glm::rotate(model_rotation_1, rot_y, glm::vec3(0.0f, 0.0f, 1.0f));
+            model_rotation_3 = glm::rotate(model_rotation_2, (float)(0.5f*M_PI), glm::vec3(-1.0f, 0.0f, 0.0f));
+        }
+
 
         if (im_edited_frame >=0 && im_edited_frame < keyframes.size() ){
             if (im_edited_frame!= im_edited_frame_old){
@@ -475,6 +491,9 @@ int main(int argc, char **argv) {
         }
 
         ImGui::Begin("SLAM Demo");
+        ImGui::Checkbox("TopOrtho", &im_top_ortho);
+        ImGui::SameLine();
+        ImGui::InputFloat("OrthoScale", &im_ortho_scale,1.f,10.f);
         ImGui::InputInt("Edited_frame",&im_edited_frame);
         ImGui::SameLine();
         if(ImGui::Button("hide gizmo")){
