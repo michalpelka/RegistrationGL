@@ -444,22 +444,24 @@ int main(int argc, char **argv) {
         }
 
         // draw reference frame
-        for (const auto &k : keyframes) {
-            glm::mat4 local;
-            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
-            map_local = k->mat.cast<float>();
-            shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
-            renderer.Draw(va, ib, shader, GL_LINES);
-        }
+//        for (const auto &k : keyframes) {
+//            glm::mat4 local;
+//            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
+//            map_local = k->mat.cast<float>();
+//            shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
+//            renderer.Draw(va, ib, shader, GL_LINES);
+//        }
         for (const auto &p : trajectory_interpolated){
             glm::mat4 local;
-            glm::mat4 scale = glm::mat4(0.01f);
+            glm::mat4 scale = glm::mat4(0.005f);
             Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
             map_local = p.cast<float>();
             shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
             renderer.Draw(va, ib, shader, GL_LINES);
         }
         GLCall(glPointSize(1));
+        GLCall(glLineWidth(3));
+
         for ( int i =0; i < keyframes.size(); i++) {
             if (im_draw_only_edited && i != im_edited_frame){
                 continue;
@@ -534,7 +536,7 @@ int main(int argc, char **argv) {
                 const Eigen::Vector3d t2(next.translation());
 
 
-                for (float r = 0; r < 1.0;r +=0.05){
+                for (float r = 0; r < 1.0;r +=0.005){
                     Eigen::Quaterniond qr = q1.slerp(r, q2);
                     Eigen::Vector3d tr = t1 + r*(t2-t1);
                     Eigen::Affine3d interpolated(Eigen::Affine3f::Identity());
@@ -557,8 +559,9 @@ int main(int argc, char **argv) {
         }
         ImGui::SameLine();
         if(ImGui::Button("iterpolate-gtsam")) {
-            trajectory_interpolated.clear();
-            trajectory_ts_interpolated.clear();
+
+            std::vector<Eigen::Matrix4d> trajectory_interpolated_gtsam;
+            std::vector<double> trajectory_ts_interpolated_gtsam;
             using namespace std;
             using namespace gtsam;
             NonlinearFactorGraph graph;
@@ -583,8 +586,34 @@ int main(int argc, char **argv) {
             result.print("Final Result:\n");
             for (int i =0; i < trajectory_noskip.size(); i++){
                 auto v =  result.at<Pose3>(i);
-                trajectory_ts_interpolated.push_back(trajectory_ts_noskip[i]);
-                trajectory_interpolated.push_back(v.matrix()*laser_offset.inverse().matrix());
+                Eigen::Matrix4d c = Eigen::Matrix4d::Identity();
+                trajectory_ts_interpolated_gtsam.push_back(trajectory_ts_noskip[i]);
+                trajectory_interpolated_gtsam.push_back(v.matrix());
+            }
+
+            trajectory_interpolated.clear();
+            trajectory_ts_interpolated.clear();
+            for (int i =0; i< trajectory_interpolated_gtsam.size()-1; i++){
+                const Eigen::Affine3d curr(trajectory_interpolated_gtsam[i]);
+                const Eigen::Affine3d next(trajectory_interpolated_gtsam[i+1]);
+                const double ts1(trajectory_ts_interpolated_gtsam[i]);
+                const double ts2(trajectory_ts_interpolated_gtsam[i+1]);
+                const Eigen::Quaterniond q1(curr.rotation());
+                const Eigen::Quaterniond q2(next.rotation());
+
+                const Eigen::Vector3d t1(curr.translation());
+                const Eigen::Vector3d t2(next.translation());
+
+                for (float r = 0; r < 1.0;r +=0.05){
+                    Eigen::Quaterniond qr = q1.slerp(r, q2);
+                    Eigen::Vector3d tr = t1 + r*(t2-t1);
+                    Eigen::Affine3d interpolated(Eigen::Affine3f::Identity());
+                    interpolated.translate(tr);
+                    interpolated.rotate(qr);
+                    double ts_r = ts1 + r * (ts2 - ts1);
+                    trajectory_interpolated.push_back((interpolated*laser_offset.inverse()).matrix());
+                    trajectory_ts_interpolated.push_back(ts_r);
+                }
             }
 
             std::ofstream f("/tmp/trajectory_gt.txt");
@@ -732,6 +761,94 @@ int main(int argc, char **argv) {
             pcl::io::savePCDFileBinary("/tmp/cloud.pcd", result);
         }
 
+        if (ImGui::Button("multiview ICP - analitcal")) {
+            std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> transformed;
+            std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> non_transformed;
+            std::vector<pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr> transformed_kdtree;
+
+            ceres::Problem problem;
+            std::vector<Sophus::Vector6d> se3params;
+            se3params.resize(keyframes.size());
+            for (int i = 0; i < keyframes.size(); i++) {
+                se3params[i]=Sophus::SE3d(Sophus::SE3d::fitToSE3(keyframes[i]->mat)).log();
+                problem.AddParameterBlock(se3params[i].data(), Sophus::SE3d::DoF,
+                                          new LocalParameterizationSE32());
+            }
+            for (int i = 0; i < keyframes.size(); i++) {
+                const auto &mat  = keyframes[i]->mat;
+
+                pcl::PointCloud<pcl::PointXYZI>::Ptr subsample(new pcl::PointCloud<pcl::PointXYZI>());
+                pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_subsample(new pcl::PointCloud<pcl::PointXYZI>());
+
+                pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
+                approximate_voxel_filter.setLeafSize (0.25,0.25,0.25);
+                approximate_voxel_filter.setInputCloud (keyframes[i]->cloud);
+                approximate_voxel_filter.filter (*subsample);
+                non_transformed.push_back(subsample);
+
+                pcl::transformPointCloud(*subsample, *transformed_subsample, mat.cast<float>());
+                transformed.push_back(transformed_subsample);
+
+                pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr partial_subsample_kdtree(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+                partial_subsample_kdtree->setInputCloud(transformed_subsample);
+                transformed_kdtree.push_back(partial_subsample_kdtree);
+            }
+            std::cout << "kdtrees done" <<std::endl;
+            std::vector<std::pair<int,int>> pairs;
+            for (int i=0; i < transformed.size(); i++)
+            {
+                for (int j=0; j < transformed.size(); j++)
+                {
+                    if (i==j) continue;
+                    //if (abs(i-j)<5) continue;
+                    auto pt1 =  Eigen::Affine3d(keyframes[i]->mat).translation();
+                    auto pt2 =  Eigen::Affine3d(keyframes[j]->mat).translation();
+                    double d = (pt1-pt2).norm();
+                    if (d<5.0) {
+                        pairs.push_back(std::pair<int, int>(i, j));
+                    }
+                }
+            }
+            std::mutex ceres_mtx;
+            tbb::parallel_for(tbb::blocked_range<size_t>(1,pairs.size()),[&](const tbb::blocked_range<size_t>& r) {
+                for (long i = r.begin(); i < r.end(); ++i) {
+                    const auto  &pair  = pairs[i];
+                    const auto pp = transformed[pair.first];
+                    const auto pk = transformed_kdtree[pair.second];
+                    for (int p1_index = 0; p1_index < pp->size(); p1_index++) {
+                        pcl::PointXYZI pt1 = pp->at(p1_index);
+                        std::vector<int> pointIdxRadiusSearch;
+                        std::vector<float> pointRadiusSquaredDistance;
+                        if (pk->radiusSearch(pt1, 0.4, pointIdxRadiusSearch, pointRadiusSquaredDistance) > 0) {
+                            int p2_index = pointIdxRadiusSearch[0];
+                            Eigen::Vector4f p1 = non_transformed[pair.first]->at(p1_index).getVector4fMap();
+                            Eigen::Vector4f p2 = non_transformed[pair.second]->at(p2_index).getVector4fMap();
+                            ceres::LossFunction *loss = new ceres::CauchyLoss(0.2);
+                            //ceres::CostFunction *cost_function =costFunICP::Create(p1, p2);
+                            ceres::CostFunction *cost_function = new costFunICP2(p1, p2);
+                            std::lock_guard<std::mutex> lck(ceres_mtx);
+                            problem.AddResidualBlock(cost_function, loss, se3params[pair.first].data(),
+                                                     se3params[pair.second].data());
+                        }
+                    }
+                }
+            });
+            ceres::Solver::Options options;
+            options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+            options.minimizer_progress_to_stdout = true;
+            options.max_num_iterations = 50;
+            ceres::Solver::Summary summary;
+            ceres::Solve(options, &problem, &summary);
+            std::cout << summary.FullReport() << "\n";
+
+            for (int i = 0; i < keyframes.size(); i++) {\
+                std::cout << "Update " << i << std::endl;
+                auto t =Sophus::SE3d(Sophus::SE3d::fitToSE3(keyframes[i]->mat)).log();
+                std::cout << "\t" << (t - se3params[i]).transpose() << std::endl;
+                keyframes[i]->mat = Sophus::SE3d::exp(se3params[i]).matrix();
+            }
+
+        }
         if (ImGui::Button("multiview ICP")) {
             std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> transformed;
             std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> non_transformed;
@@ -780,25 +897,28 @@ int main(int argc, char **argv) {
                     }
                 }
             }
-            for (auto pair : pairs)
-            {
-                const auto pp = transformed[pair.first];
-                const auto pk = transformed_kdtree[pair.second];
-                for (int p1_index = 0; p1_index < pp->size(); p1_index++ )
-                {
-                    pcl::PointXYZI pt1 = pp->at(p1_index);
-                    std::vector<int> pointIdxRadiusSearch;
-                    std::vector<float> pointRadiusSquaredDistance;
-                    if (pk->radiusSearch(pt1, 0.5, pointIdxRadiusSearch, pointRadiusSquaredDistance) > 0) {
-                        int p2_index = pointIdxRadiusSearch[0];
-                        Eigen::Vector4f p1 = non_transformed[pair.first]->at(p1_index).getVector4fMap();
-                        Eigen::Vector4f p2 = non_transformed[pair.second]->at(p2_index).getVector4fMap();
-                        ceres::LossFunction *loss = nullptr;//new ceres::CauchyLoss(0.2);
-                        ceres::CostFunction *cost_function =costFunICP::Create(p1, p2);
-                        problem.AddResidualBlock(cost_function, loss, se3params[pair.first].data(),se3params[pair.second].data());
+            std::mutex ceres_mtx;
+            tbb::parallel_for(tbb::blocked_range<size_t>(1,pairs.size()),[&](const tbb::blocked_range<size_t>& r) {
+                for (long i = r.begin(); i < r.end(); ++i) {
+                    const auto &pair = pairs[i];
+                    const auto pp = transformed[pair.first];
+                    const auto pk = transformed_kdtree[pair.second];
+                    for (int p1_index = 0; p1_index < pp->size(); p1_index++) {
+                        pcl::PointXYZI pt1 = pp->at(p1_index);
+                        std::vector<int> pointIdxRadiusSearch;
+                        std::vector<float> pointRadiusSquaredDistance;
+                        if (pk->radiusSearch(pt1, 0.4, pointIdxRadiusSearch, pointRadiusSquaredDistance) > 0) {
+                            int p2_index = pointIdxRadiusSearch[0];
+                            Eigen::Vector4f p1 = non_transformed[pair.first]->at(p1_index).getVector4fMap();
+                            Eigen::Vector4f p2 = non_transformed[pair.second]->at(p2_index).getVector4fMap();
+                            ceres::LossFunction *loss = new ceres::CauchyLoss(0.2);
+                            ceres::CostFunction *cost_function = costFunICP::Create(p1, p2);
+                            problem.AddResidualBlock(cost_function, loss, se3params[pair.first].data(),
+                                                     se3params[pair.second].data());
+                        }
                     }
                 }
-            }
+            });
             ceres::Solver::Options options;
             options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
             options.minimizer_progress_to_stdout = true;
