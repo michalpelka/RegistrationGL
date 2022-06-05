@@ -22,9 +22,10 @@
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
+#include <gtsam/navigation/GPSFactor.h>
 #include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/registration/ndt.h>
-
+#include <pcl/filters/filter.h>
 #include <pcl/kdtree/kdtree_flann.h>
 
 #include <boost/program_options.hpp>
@@ -59,8 +60,8 @@ void cursor_calback(GLFWwindow* window, double xpos, double ypos)
             view_translation[2] += 0.02 * d[1];
         }
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_3) == GLFW_PRESS) {
-            view_translation[1] -= 0.01 * d[1];
-            view_translation[0] -= 0.01 * d[0];
+            view_translation[1] -= 0.05 * d[1];
+            view_translation[0] -= 0.05 * d[0];
         }
         clicked_point = p;
     }
@@ -91,7 +92,7 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
             int prev = i - 1;
             int current = i;
             Eigen::Matrix4d increment = keyframes[prev]->mat.inverse() * keyframes[current]->mat;
-            pcl::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
+            pcl::NormalDistributionsTransform<pcl::PointXYZRGB, pcl::PointXYZRGB> ndt;
             // Setting scale dependent NDT parameters
             // Setting minimum transformation difference for termination condition.
             ndt.setTransformationEpsilon(0.01);
@@ -105,7 +106,7 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
             ndt.setInputSource(keyframes[current]->cloud);
             ndt.setInputTarget(keyframes[prev]->cloud);
 
-            pcl::PointCloud<pcl::PointXYZI> t;
+            pcl::PointCloud<pcl::PointXYZRGB> t;
             Eigen::Matrix4f increment_f = increment.cast<float>();
             ndt.align(t, increment_f);
 
@@ -124,7 +125,8 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
     });
     std::cout << "loop closing"<<std::endl;
     std::vector<std::pair<int,int>> candidates;
-    tbb::parallel_for(tbb::blocked_range<size_t>(1,keyframes.size()),[&](const tbb::blocked_range<size_t>& r) {
+    std::mutex mtx;
+    tbb::parallel_for(tbb::blocked_range<size_t>(0,keyframes.size()),[&](const tbb::blocked_range<size_t>& r) {
         for (long i=r.begin();i<r.end();++i) {
             for (int j=0; j< keyframes.size(); j++)
             {
@@ -137,7 +139,7 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                 if (distance < loop_distance){
 
                     Eigen::Matrix4d increment = keyframes[prev]->mat.inverse() * keyframes[current]->mat;
-                    pcl::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
+                    pcl::NormalDistributionsTransform<pcl::PointXYZRGB, pcl::PointXYZRGB> ndt;
                     // Setting scale dependent NDT parameters
                     // Setting minimum transformation difference for termination condition.
                     ndt.setTransformationEpsilon(0.01);
@@ -151,9 +153,10 @@ void register_ndt(const std::vector<std::unique_ptr<structs::KeyFrame>>& keyfram
                     ndt.setInputSource(keyframes[current]->cloud);
                     ndt.setInputTarget(keyframes[prev]->cloud);
 
-                    pcl::PointCloud<pcl::PointXYZI> t;
+                    pcl::PointCloud<pcl::PointXYZRGB> t;
                     Eigen::Matrix4f increment_f = increment.cast<float>();
                     ndt.align(t, increment_f);
+
                     if (ndt.hasConverged()) {
                         icp_result r;
                         r.increment = ndt.getFinalTransformation().cast<double>();
@@ -214,7 +217,7 @@ int main(int argc, char **argv) {
     std::shared_ptr<gt_overlay> gt_img_overlay;
     Eigen::Affine3d laser_offset{Eigen::Affine3d::Identity()};
     laser_offset.translation() = Eigen::Vector3d{0.2,0.0,0.5};
-    auto Q = Eigen::Quaterniond{ 0.96593,0.0, 0.0, -0.25882};
+    auto Q = Eigen::Quaterniond::Identity();//Eigen::Quaterniond{ 0.96593,0.0, 0.0, -0.25882};
     Q.normalize();
     laser_offset.rotate(Q);
 
@@ -226,9 +229,8 @@ int main(int argc, char **argv) {
             ("gt", po::value<std::string>(), "ground truth")
             ("gt_img", po::value<std::string>(), "ground truth image")
             ("gt_img_length", po::value<int>(), "ground truth image length")
-            ("skip", po::value<int>(), "skip")
-            ("json", po::value<std::string>(), "json state")
-            ;
+            ("skip", po::value<int>()->default_value(1), "skip")
+            ("json", po::value<std::string>(), "json state");
     po::variables_map vm;
     po::store(po::parse_command_line(argc, argv, desc), vm);
     po::notify(vm);
@@ -293,41 +295,70 @@ int main(int argc, char **argv) {
     std::vector<std::string> fns_noskip;
     for (int i =0; i < fns_raw.size(); i+=1)
     {
-        fns_noskip.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-4));
+        fns_noskip.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-std::string("_color.pcd").length()));
     }
     for (int i =0; i < fns_raw.size(); i+=vm["skip"].as<int>())
     {
-        fns.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-4));
+        fns.push_back(std::string(fns_raw[i].begin(),fns_raw[i].end()-std::string("_color.pcd").length()));
     }
 
     double off_x = 0;
     double off_y = 0;
 
     for (const auto fn : fns){
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZI>);
-        pcl::io::loadPCDFile<pcl::PointXYZI>(fn+".pcd",*cloud);
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
+        pcl::io::loadPCDFile<pcl::PointXYZRGB>(fn+"_color.pcd",*cloud);
         trajectory.push_back(my_utils::loadMat(fn+".txt"));
+        Eigen::Vector2d utm = my_utils::loadNovatel(fn+".novatel");
         double ts = 0;
         std::ifstream  ifn (fn+".ts");
         ifn >> ts;
         trajectory_ts.push_back(ts);
 
-        if (off_x == 0)
-        {
-            off_x = trajectory.front()(0,3);
-            off_y = trajectory.front()(1,3);
-        }
-        trajectory.back()(0,3) -= off_x;
-        trajectory.back()(1,3) -= off_y;
 
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_subsample(new pcl::PointCloud<pcl::PointXYZI>());
-        pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
-        approximate_voxel_filter.setLeafSize (0.1,0.1,0.1);
+
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_subsample(new pcl::PointCloud<pcl::PointXYZRGB>());
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_subample_nan(new pcl::PointCloud<pcl::PointXYZRGB>());
+
+
+
+        pcl::ApproximateVoxelGrid<pcl::PointXYZRGB> approximate_voxel_filter;
+        approximate_voxel_filter.setLeafSize (0.5,0.5,0.5);
         approximate_voxel_filter.setInputCloud (cloud);
         approximate_voxel_filter.filter (*cloud_subsample);
-
-        keyframes.emplace_back(std::make_unique<structs::KeyFrame>(cloud_subsample,  trajectory.back()));
+        cloud_subample_nan->reserve(cloud->size());
+        for (const auto & p : *cloud_subsample){
+            Eigen::Vector3f pp = p.getVector3fMap();
+            if (pp.norm()< 500 && pp.norm()>0)
+            {
+                cloud_subample_nan->push_back(p);
+            }
+        }
+        keyframes.emplace_back(std::make_unique<structs::KeyFrame>(cloud_subample_nan,  trajectory.back()));
+        keyframes.back()->UTM = utm;
     }
+    // update UTM;
+    Eigen::Vector2d centroid {0.,0.};
+    int valid_utm = 0;
+    for (const auto& k: keyframes){
+        if (k->UTM.x()>0 &&k->UTM.y()>0) {
+            centroid += k->UTM;
+            k->gnss_valid = true;
+            valid_utm++;
+        }
+    }
+    centroid = centroid / valid_utm;
+    std::cout <<"UTM frames :" << std::endl;
+    for (const auto& k: keyframes){
+        if (k->gnss_valid) {
+            k->UTM_offset = k->UTM - centroid;
+            std::cout << k->UTM_offset.transpose();
+            std::cout << std::endl;
+        }
+    }
+
+
+
     for (const auto fn : fns_noskip){
         trajectory_noskip.push_back(my_utils::loadMat(fn+".txt"));
         double ts = 0;
@@ -349,10 +380,10 @@ int main(int argc, char **argv) {
     
     if (vm.count("gt"))
     {
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZI>);
-        pcl::io::loadPCDFile<pcl::PointXYZI>(vm["gt"].as<std::string>(),*cloud);
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_subsample(new pcl::PointCloud<pcl::PointXYZI>());
-        pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
+        pcl::io::loadPCDFile<pcl::PointXYZRGB>(vm["gt"].as<std::string>(),*cloud);
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_subsample(new pcl::PointCloud<pcl::PointXYZRGB>());
+        pcl::ApproximateVoxelGrid<pcl::PointXYZRGB> approximate_voxel_filter;
         approximate_voxel_filter.setLeafSize (0.1,0.1,0.1);
         approximate_voxel_filter.setInputCloud (cloud);
         approximate_voxel_filter.filter (*cloud_subsample);
@@ -363,12 +394,12 @@ int main(int argc, char **argv) {
     int im_edited_frame = 1;
     int im_edited_frame_old = -1;
     float im_ndt_res = 0.5;
-    float im_loop = 1.5;
+    float im_loop = 5.5;
     float im_gui_odometry = 1;
     bool im_draw_only_edited{false};
     bool im_top_ortho{false};
     float im_ortho_scale = 50;
-
+    bool im_run_ndt{false};
 
     while (!glfwWindowShouldClose(window)) {
         GLCall(glEnable(GL_DEPTH_TEST));
@@ -444,13 +475,13 @@ int main(int argc, char **argv) {
         }
 
         // draw reference frame
-//        for (const auto &k : keyframes) {
-//            glm::mat4 local;
-//            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
-//            map_local = k->mat.cast<float>();
-//            shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
-//            renderer.Draw(va, ib, shader, GL_LINES);
-//        }
+        for (const auto &k : keyframes) {
+            glm::mat4 local;
+            Eigen::Map<Eigen::Matrix4f> map_local(&local[0][0]);
+            map_local = k->mat.cast<float>();
+            shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
+            renderer.Draw(va, ib, shader, GL_LINES);
+        }
         for (const auto &p : trajectory_interpolated){
             glm::mat4 local;
             glm::mat4 scale = glm::mat4(0.005f);
@@ -463,7 +494,7 @@ int main(int argc, char **argv) {
         GLCall(glLineWidth(3));
 
         for ( int i =0; i < keyframes.size(); i++) {
-            if (im_draw_only_edited && i != im_edited_frame){
+            if (im_draw_only_edited && i > im_edited_frame){
                 continue;
             }
             const auto &k = keyframes[i];
@@ -473,10 +504,10 @@ int main(int argc, char **argv) {
             map_local = k->mat.cast<float>();
 
             if (i == im_edited_frame ){
-                shader_pc.setUniform4f("u_COLORPC", 1,1,1,1);
+                shader_pc.setUniform4f("u_COLORPC", 1,0,0,1);
             }else{
 
-                shader_pc.setUniform4f("u_COLORPC", 1,0,0,1);
+                shader_pc.setUniform4f("u_COLORPC", k->color.x(),k->color.y(),k->color.z(),1.0f);
             }
             shader_pc.setUniformMat4f("u_MVPPC", proj * model_rotation_3 * local );
             renderer.DrawArray(k->va, shader_pc, GL_POINTS, k->cloud->size());
@@ -503,9 +534,9 @@ int main(int argc, char **argv) {
         }
         if(ImGui::Button("load")) {
             std::vector<Eigen::Matrix4d> m_trajectory;
-            m_trajectory.resize(keyframes.size());
+            //m_trajectory.resize(keyframes.size());
             my_utils::LoadState(json_config, m_trajectory, icp_gt_resutls);
-            for (int i =0; i < keyframes.size(); i++)
+            for (int i =0; i < m_trajectory.size(); i++)
             {
                 keyframes[i]->mat = m_trajectory[i];
             }
@@ -633,25 +664,38 @@ int main(int argc, char **argv) {
             view_translation = glm::vec3{ 0,0,-30 };
         }
 
-        ImGui::SliderFloat("im_ndt_res", &im_ndt_res, 0.f, 1.f);
-        ImGui::SliderFloat("im_loop", &im_loop, 0.f, 5.f);
+        ImGui::SliderFloat("im_ndt_res", &im_ndt_res, 0.f, 15.f);
+        ImGui::SliderFloat("im_loop", &im_loop, 0.f, 100.f);
+        ImGui::Checkbox("im_run_ndt", &im_run_ndt);
         if (ImGui::Button("ndt laser odometry"))
         {
-            register_ndt(keyframes, icp_results,im_ndt_res, im_loop);
+            if(im_run_ndt){
+                register_ndt(keyframes, icp_results,im_ndt_res, im_loop);
+            }
             using namespace std;
             using namespace gtsam;
             NonlinearFactorGraph graph;
-            if(icp_gt_resutls.empty()) {
-                auto priorModel = noiseModel::Diagonal::Variances(
-                        (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
-
-                graph.add(PriorFactor<Pose3>(0, Pose3(keyframes[0]->mat), priorModel));
-            }
-            for (auto const& x : icp_gt_resutls ){
-                auto priorModel = noiseModel::Diagonal::Variances(
-                        (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6).finished());
-
-                graph.add(PriorFactor<Pose3>(x.first, Pose3(x.second), priorModel));
+//            if(icp_gt_resutls.empty()) {
+//                auto priorModel = noiseModel::Diagonal::Variances(
+//                        (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
+//
+//                graph.add(PriorFactor<Pose3>(0, Pose3(keyframes[0]->mat), priorModel));
+//            }
+//            for (auto const& x : icp_gt_resutls ){
+//                auto priorModel = noiseModel::Diagonal::Variances(
+//                        (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6).finished());
+//
+//                graph.add(PriorFactor<Pose3>(x.first, Pose3(x.second), priorModel));
+//            }
+            // aply GNSS
+            for (int i =0; i < keyframes.size(); i++) {
+                if (keyframes[i]->gnss_valid) {
+                    std::cout << "gnss valid" << std::endl;
+                    auto priorModel = noiseModel::Diagonal::Variances(
+                            (Vector(3) <<0.07, 0.07,0.07).finished());
+                    auto meas = (Vector(3) <<keyframes[i]->UTM_offset.y(), keyframes[i]->UTM_offset.x(),0.0).finished();
+                    graph.add(GPSFactor(i,meas, priorModel));
+                }
             }
             //apply imu
             for (int i =0; i < keyframes.size(); i++) {
@@ -660,16 +704,17 @@ int main(int argc, char **argv) {
 
                 graph.add(PriorFactor<Pose3>(i, Pose3(trajectory[i]), priorModel));
             }
+            //aply odometry
             for (int i =1; i < keyframes.size(); i++){
                 auto odometryNoise = noiseModel::Diagonal::Variances(
-                        (Vector(6) << 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1).finished());
+                        (Vector(6) << 0.1, 0.1, 0.5, 1,1,1).finished());
                 Eigen::Matrix4d update = trajectory[i-1].inverse() * trajectory[i];
                 graph.emplace_shared<BetweenFactor<Pose3> >(i-1, i, Pose3(orthogonize(update)), odometryNoise);
             }
             for (int i =0; i < icp_results.size();i++)
             {
                 auto odometryNoise = noiseModel::Diagonal::Variances(
-                        (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6).finished());
+                        (Vector(6) << 1e-3, 1e-3, 1e-3, 1e-3, 1e-3, 1e-3).finished());
                 int prev = icp_results[i].keyframePrev;
                 int next = icp_results[i].keyframeNext;
 
@@ -681,6 +726,7 @@ int main(int argc, char **argv) {
                 initial.insert(i, Pose3(orthogonize(keyframes[i]->mat)));
             }
             Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
+            result.print("Final Result:\n");
             for (int i =0; i < keyframes.size(); i++){
                 auto v =  result.at<Pose3>(i);
                 keyframes[i]->mat =v.matrix();
@@ -751,9 +797,9 @@ int main(int argc, char **argv) {
             }
         }
         if (ImGui::Button("export")) {
-            pcl::PointCloud<pcl::PointXYZI> result;
+            pcl::PointCloud<pcl::PointXYZRGB> result;
             for (int i = 0; i < keyframes.size(); i++) {
-                pcl::PointCloud<pcl::PointXYZI> partial;
+                pcl::PointCloud<pcl::PointXYZRGB> partial;
                 const auto &mat  = keyframes[i]->mat;
                 pcl::transformPointCloud(*(keyframes[i]->cloud), partial, mat.cast<float>());
                 result += partial;
@@ -762,9 +808,9 @@ int main(int argc, char **argv) {
         }
 
         if (ImGui::Button("multiview ICP - analitcal")) {
-            std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> transformed;
-            std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> non_transformed;
-            std::vector<pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr> transformed_kdtree;
+            std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> transformed;
+            std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> non_transformed;
+            std::vector<pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr> transformed_kdtree;
 
             ceres::Problem problem;
             std::vector<Sophus::Vector6d> se3params;
@@ -777,11 +823,11 @@ int main(int argc, char **argv) {
             for (int i = 0; i < keyframes.size(); i++) {
                 const auto &mat  = keyframes[i]->mat;
 
-                pcl::PointCloud<pcl::PointXYZI>::Ptr subsample(new pcl::PointCloud<pcl::PointXYZI>());
-                pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_subsample(new pcl::PointCloud<pcl::PointXYZI>());
+                pcl::PointCloud<pcl::PointXYZRGB>::Ptr subsample(new pcl::PointCloud<pcl::PointXYZRGB>());
+                pcl::PointCloud<pcl::PointXYZRGB>::Ptr transformed_subsample(new pcl::PointCloud<pcl::PointXYZRGB>());
 
-                pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
-                approximate_voxel_filter.setLeafSize (0.25,0.25,0.25);
+                pcl::ApproximateVoxelGrid<pcl::PointXYZRGB> approximate_voxel_filter;
+                approximate_voxel_filter.setLeafSize (im_ndt_res/2,im_ndt_res/2,im_ndt_res/2);
                 approximate_voxel_filter.setInputCloud (keyframes[i]->cloud);
                 approximate_voxel_filter.filter (*subsample);
                 non_transformed.push_back(subsample);
@@ -789,7 +835,7 @@ int main(int argc, char **argv) {
                 pcl::transformPointCloud(*subsample, *transformed_subsample, mat.cast<float>());
                 transformed.push_back(transformed_subsample);
 
-                pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr partial_subsample_kdtree(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+                pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr partial_subsample_kdtree(new pcl::KdTreeFLANN<pcl::PointXYZRGB>());
                 partial_subsample_kdtree->setInputCloud(transformed_subsample);
                 transformed_kdtree.push_back(partial_subsample_kdtree);
             }
@@ -804,9 +850,9 @@ int main(int argc, char **argv) {
                     auto pt1 =  Eigen::Affine3d(keyframes[i]->mat).translation();
                     auto pt2 =  Eigen::Affine3d(keyframes[j]->mat).translation();
                     double d = (pt1-pt2).norm();
-                    if (d<5.0) {
+                    //if (d<5.0) {
                         pairs.push_back(std::pair<int, int>(i, j));
-                    }
+                    //}
                 }
             }
             std::mutex ceres_mtx;
@@ -816,10 +862,10 @@ int main(int argc, char **argv) {
                     const auto pp = transformed[pair.first];
                     const auto pk = transformed_kdtree[pair.second];
                     for (int p1_index = 0; p1_index < pp->size(); p1_index++) {
-                        pcl::PointXYZI pt1 = pp->at(p1_index);
+                        pcl::PointXYZRGB pt1 = pp->at(p1_index);
                         std::vector<int> pointIdxRadiusSearch;
                         std::vector<float> pointRadiusSquaredDistance;
-                        if (pk->radiusSearch(pt1, 0.4, pointIdxRadiusSearch, pointRadiusSquaredDistance) > 0) {
+                        if (pk->radiusSearch(pt1, im_ndt_res, pointIdxRadiusSearch, pointRadiusSquaredDistance) > 0) {
                             int p2_index = pointIdxRadiusSearch[0];
                             Eigen::Vector4f p1 = non_transformed[pair.first]->at(p1_index).getVector4fMap();
                             Eigen::Vector4f p2 = non_transformed[pair.second]->at(p2_index).getVector4fMap();
@@ -850,9 +896,9 @@ int main(int argc, char **argv) {
 
         }
         if (ImGui::Button("multiview ICP")) {
-            std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> transformed;
-            std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> non_transformed;
-            std::vector<pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr> transformed_kdtree;
+            std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> transformed;
+            std::vector<pcl::PointCloud<pcl::PointXYZRGB>::Ptr> non_transformed;
+            std::vector<pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr> transformed_kdtree;
 
             ceres::Problem problem;
             std::vector<Sophus::SE3d> se3params;
@@ -865,11 +911,11 @@ int main(int argc, char **argv) {
             for (int i = 0; i < keyframes.size(); i++) {
                 const auto &mat  = keyframes[i]->mat;
 
-                pcl::PointCloud<pcl::PointXYZI>::Ptr subsample(new pcl::PointCloud<pcl::PointXYZI>());
-                pcl::PointCloud<pcl::PointXYZI>::Ptr transformed_subsample(new pcl::PointCloud<pcl::PointXYZI>());
+                pcl::PointCloud<pcl::PointXYZRGB>::Ptr subsample(new pcl::PointCloud<pcl::PointXYZRGB>());
+                pcl::PointCloud<pcl::PointXYZRGB>::Ptr transformed_subsample(new pcl::PointCloud<pcl::PointXYZRGB>());
 
-                pcl::ApproximateVoxelGrid<pcl::PointXYZI> approximate_voxel_filter;
-                approximate_voxel_filter.setLeafSize (0.25,0.25,0.25);
+                pcl::ApproximateVoxelGrid<pcl::PointXYZRGB> approximate_voxel_filter;
+                approximate_voxel_filter.setLeafSize (0.01,0.1,0.01);
                 approximate_voxel_filter.setInputCloud (keyframes[i]->cloud);
                 approximate_voxel_filter.filter (*subsample);
                 non_transformed.push_back(subsample);
@@ -877,7 +923,7 @@ int main(int argc, char **argv) {
                 pcl::transformPointCloud(*subsample, *transformed_subsample, mat.cast<float>());
                 transformed.push_back(transformed_subsample);
 
-                pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr partial_subsample_kdtree(new pcl::KdTreeFLANN<pcl::PointXYZI>());
+                pcl::KdTreeFLANN<pcl::PointXYZRGB>::Ptr partial_subsample_kdtree(new pcl::KdTreeFLANN<pcl::PointXYZRGB>());
                 partial_subsample_kdtree->setInputCloud(transformed_subsample);
                 transformed_kdtree.push_back(partial_subsample_kdtree);
             }
@@ -904,7 +950,7 @@ int main(int argc, char **argv) {
                     const auto pp = transformed[pair.first];
                     const auto pk = transformed_kdtree[pair.second];
                     for (int p1_index = 0; p1_index < pp->size(); p1_index++) {
-                        pcl::PointXYZI pt1 = pp->at(p1_index);
+                        pcl::PointXYZRGB pt1 = pp->at(p1_index);
                         std::vector<int> pointIdxRadiusSearch;
                         std::vector<float> pointRadiusSquaredDistance;
                         if (pk->radiusSearch(pt1, 0.4, pointIdxRadiusSearch, pointRadiusSquaredDistance) > 0) {
@@ -937,7 +983,7 @@ int main(int argc, char **argv) {
         if (gt_keyframe) {
             if (ImGui::Button("register current scan to gt")) {
                 Eigen::Matrix4d increment = keyframes.at(im_edited_frame)->mat;
-                pcl::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI> ndt;
+                pcl::NormalDistributionsTransform<pcl::PointXYZRGB, pcl::PointXYZRGB> ndt;
                 // Setting scale dependent NDT parameters
                 // Setting minimum transformation difference for termination condition.
                 ndt.setTransformationEpsilon(0.01);
@@ -951,7 +997,7 @@ int main(int argc, char **argv) {
                 ndt.setInputSource(keyframes.at(im_edited_frame)->cloud);
                 ndt.setInputTarget(gt_keyframe->cloud);
 
-                pcl::PointCloud<pcl::PointXYZI> t;
+                pcl::PointCloud<pcl::PointXYZRGB> t;
                 Eigen::Matrix4f increment_f = increment.cast<float>();
                 ndt.align(t, increment_f);
 

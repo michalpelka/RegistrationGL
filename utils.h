@@ -23,6 +23,8 @@ namespace my_utils{
 
     std::vector<float> loadTXTCloud(const std::string &fn);
 
+    Eigen::Vector2d loadNovatel(const std::string &fn);
+
     Eigen::Matrix4d loadMat(const std::string& fn);
 
     void saveMat(const std::string& fn, const Eigen::Matrix4d& mat);
