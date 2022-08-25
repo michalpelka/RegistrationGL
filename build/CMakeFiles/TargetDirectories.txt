@@ -1,0 +1,5 @@
+/home/michal/code/RegistrationGL/build/CMakeFiles/edit_cache.dir
+/home/michal/code/RegistrationGL/build/CMakeFiles/ndt_test.dir
+/home/michal/code/RegistrationGL/build/CMakeFiles/rebuild_cache.dir
+/home/michal/code/RegistrationGL/build/CMakeFiles/GL_Codes.dir
+/home/michal/code/RegistrationGL/build/CMakeFiles/slamGL.dir

@@ -46,12 +46,14 @@ void my_utils::LoadState(const std::string &fn, std::vector<Eigen::Matrix4d>& tr
         auto t = deserialize(pt.get<std::string>("trajectory.keyframes."+std::to_string(i)));
         trajectory[i] = t.matrix();
     }
-    const auto & pt_icp = pt.get_child("gt_icp.icp");
-
-    for (auto &it : pt_icp){
-        const int id=std::atoi(it.first.data()) ;
-        const auto mat = deserialize(it.second.data());
-        gt_icp_resutls[id] = mat.matrix();
+    const auto & pt_icp = pt.get_child_optional("gt_icp.icp");
+    if (pt_icp)
+    {
+        for (auto &it : *pt_icp){
+            const int id=std::atoi(it.first.data()) ;
+            const auto mat = deserialize(it.second.data());
+            gt_icp_resutls[id] = mat.matrix();
+        }
     }
 
 
