@@ -44,7 +44,7 @@ uniform vec4 u_COLORPC;
 void main()
 {
   gl_Position = u_MVPPC * position;
-  v_color = u_COLORPC*5*(intensity/255);
+  v_color = u_COLORPC*5*(255/255);
 };
 )""";
 const char* shader_pc_intensity_head_v=R"""(

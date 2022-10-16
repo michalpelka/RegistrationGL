@@ -40,21 +40,24 @@ void my_utils::LoadState(const std::string &fn, std::vector<Eigen::Matrix4d>& tr
         return Sophus::SE3d::exp(l);
     };
 
-    for (int i =0; i < trajectory.size(); i++)
+    for (int i =0; ; i++)
     {
-        std::string str;
-        auto t = deserialize(pt.get<std::string>("trajectory.keyframes."+std::to_string(i)));
-        trajectory[i] = t.matrix();
-    }
-    const auto & pt_icp = pt.get_child_optional("gt_icp.icp");
-    if (pt_icp)
-    {
-        for (auto &it : *pt_icp){
-            const int id=std::atoi(it.first.data()) ;
-            const auto mat = deserialize(it.second.data());
-            gt_icp_resutls[id] = mat.matrix();
+        auto data = pt.get_optional<std::string>("trajectory.keyframes."+std::to_string(i));
+        if (data) {
+            std::string str;
+            auto t = deserialize(*data);
+            trajectory.push_back(t.matrix());
+        }else{
+            break;
         }
     }
+//    const auto & pt_icp = pt.get_child("gt_icp.icp");
+//
+//    for (auto &it : pt_icp){
+//        const int id=std::atoi(it.first.data()) ;
+//        const auto mat = deserialize(it.second.data());
+//        gt_icp_resutls[id] = mat.matrix();
+//    }
 
 
 }
@@ -133,4 +136,38 @@ Eigen::Matrix4d my_utils::orthogonize(const Eigen::Matrix4d & p )
     }
     globfree(&glob_result);
     return ret;
+}
+
+Eigen::Vector2d my_utils::loadNovatel(const std::string &fn){
+    std::fstream infile(fn);
+    std::string line;
+    std::vector<double> lat;
+    std::vector<double> lon;
+    while (std::getline(infile, line)){
+        std::replace( line.begin(), line.end(), ',', ' ');
+        std::stringstream ss(line);
+        std::vector<std::string> fields;
+        while (!ss.eof()){
+            std::string f;
+            ss >> f;
+            fields.push_back(f);
+        }
+        if (fields.size()>12){
+            lat.push_back(std::atof(fields[11].c_str()));
+            lon.push_back(std::atof(fields[12].c_str()));
+        }
+    }
+    assert(lat.size()==lon.size());
+    if (!lat.empty()) {
+
+        float lat_mean = std::accumulate(lat.begin(), lat.end(), 0.f) / lat.size();
+        float lon_mean = std::accumulate(lon.begin(), lon.end(), 0.f) / lon.size();
+        Eigen::Vector2d utm;
+        std::string zone;
+        double gamma;
+        RobotLocalization::NavsatConversions::LLtoUTM(lat_mean, lon_mean, utm[0], utm[1], zone, gamma);
+        std::cout << "Zone " << zone << " gamma " << gamma << std::endl;
+        return utm;
+    }
+    return {-1,-1};
 }

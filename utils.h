@@ -12,7 +12,7 @@
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
 #include <glob.h>
-
+#include "navsat.h"
 namespace my_utils{
 
     void saveState(const std::string &fn, const std::vector<Eigen::Matrix4d>& trajectory, const std::map<int,Eigen::Matrix4d>& gt_icp_resutls);
@@ -22,6 +22,8 @@ namespace my_utils{
     std::pair<double, Eigen::Matrix4d> loadLineCsv(std::string line);
 
     std::vector<float> loadTXTCloud(const std::string &fn);
+
+    Eigen::Vector2d loadNovatel(const std::string &fn);
 
     Eigen::Matrix4d loadMat(const std::string& fn);
 
