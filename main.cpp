@@ -297,10 +297,11 @@ int main(int argc, char **argv) {
             ("help", "produce help message")
             ("dataset", po::value<std::string>(), "dataset")
             ("gt", po::value<std::string>(), "ground truth")
+            ("gt_plane", po::value<int>(), "gt_plane")
             ("gt_img", po::value<std::string>(), "ground truth image")
             ("gt_img_length", po::value<int>(), "ground truth image length")
             ("postfix", po::value<std::string>()->default_value(".pcd"), "postfix to pcd")
-            ("skip", po::value<int>(), "skip")
+            ("skip", po::value<int>()->default_value(1), "skip")
             ("laser_offset", po::value<float>()->default_value(0.f), "laser_offset")
             ("json", po::value<std::string>(), "json state")
             ;
@@ -364,9 +365,9 @@ int main(int argc, char **argv) {
 
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
-    ImGui_ImplGlfw_InitForOpenGL(window, false);
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
-
+    glfwSetCursorPosCallback(window, cursor_calback);
     const std::string json_config = (vm.count("json")>0)?(vm["json"].as<std::string>()):"config.json";
     std::cout << "json_config " << json_config << std::endl;
     // load matrix
@@ -393,12 +394,11 @@ int main(int argc, char **argv) {
         pcl::io::loadPCDFile<pcl::PointXYZRGB>(fn+postfix,*cloud);
         trajectory.push_back(my_utils::loadMat(fn+".txt"));
         Eigen::Vector2d utm = my_utils::loadNovatel(fn+".novatel");
+        Eigen::Vector4d ground_dir = my_utils::loadGround(fn+"_ground.txt");
         double ts = 0;
         std::ifstream  ifn (fn+".ts");
         ifn >> ts;
         trajectory_ts.push_back(ts);
-
-
 
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_subsample(new pcl::PointCloud<pcl::PointXYZRGB>());
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud_subample_nan(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -419,6 +419,8 @@ int main(int argc, char **argv) {
         }
         keyframes.emplace_back(std::make_unique<structs::KeyFrame>(cloud_subample_nan,  trajectory.back()));
         keyframes.back()->UTM = utm;
+        keyframes.back()->groundDir = ground_dir;
+        keyframes.back()->fn = fn;
     }
     // update UTM;
     Eigen::Vector2d centroid {0.,0.};
@@ -472,6 +474,21 @@ int main(int argc, char **argv) {
         approximate_voxel_filter.filter (*cloud_subsample);
         gt_keyframe = std::make_unique<structs::KeyFrame>(cloud_subsample,  Eigen::Matrix4d::Identity());
     }
+    if (vm.count("gt_plane"))
+    {
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
+        for (float f =-200; f < 200; f+=0.2)
+        {
+            for (float g =-200; g < 200; g+=0.2){
+                pcl::PointXYZRGB p;
+                p.getVector3fMap() = Eigen::Vector3f(f,g,0);
+                cloud->push_back(p);
+            }
+
+        }
+        gt_keyframe = std::make_unique<structs::KeyFrame>(cloud,  Eigen::Matrix4d::Identity());
+    }
+
 
     Eigen::Matrix4f imgizmo {Eigen::Matrix4f::Identity()};
     int im_edited_frame = 1;
@@ -479,14 +496,16 @@ int main(int argc, char **argv) {
     int im_frames_odom=1;
 
     float im_ndt_res = 0.5;
-
     float im_ndt_res_loop = 2.5;
-
     float im_loop = 5.5;
     float im_gui_odometry = 1;
     bool im_draw_only_edited{false};
     bool im_top_ortho{false};
     float im_ortho_scale = 50;
+    float im_ortho_height = -50;
+    float im_ortho_slice = 100;
+
+
     bool im_run_ndt{false};
 
 
@@ -508,8 +527,8 @@ int main(int argc, char **argv) {
         glm::mat4 proj;
         glm::mat4 model_rotation_3;
         if (im_top_ortho) {
-            proj = glm::ortho(-im_ortho_scale* width / height, im_ortho_scale * width / height, -im_ortho_scale, im_ortho_scale, -100.0f,
-                                        100.0f);
+            proj = glm::ortho(-im_ortho_scale* width / height, im_ortho_scale * width / height, -im_ortho_scale, im_ortho_scale, im_ortho_slice,
+                              im_ortho_slice+im_ortho_height);
             glm::mat4 model_translate = glm::translate(glm::mat4(1.0f), view_translation);
             glm::mat4 model_rotation_1 = glm::rotate(model_translate, float(M_PI/2), glm::vec3(1.0f, 0.0f, 0.0f));
             model_rotation_3 = glm::rotate(model_rotation_1, (float)(0.5f*M_PI), glm::vec3(-1.0f, 0.0f, 0.0f));
@@ -570,7 +589,17 @@ int main(int argc, char **argv) {
             map_local = k->mat.cast<float>();
             shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
             renderer.Draw(va, ib, shader, GL_LINES);
+
+            auto dir = k->groundDir;
+            auto xy = k->mat.col(3).head<2>();
+            map_local = k->mat.cast<float>()* my_utils::get4by4FromPlane(dir, Eigen::Vector2d{0,0}).cast<float>();
+
+            shader.setUniformMat4f("u_MVP", proj * model_rotation_3 * local * scale);
+            renderer.Draw(va, ib, shader, GL_LINES);
+
+
         }
+
         for (const auto &p : trajectory_interpolated){
             glm::mat4 local;
             glm::mat4 scale = glm::mat4(0.005f);
@@ -615,7 +644,12 @@ int main(int argc, char **argv) {
         ImGui::Begin("SLAM Demo");
         ImGui::Checkbox("TopOrtho", &im_top_ortho);
         ImGui::SameLine();
+
         ImGui::InputFloat("OrthoScale", &im_ortho_scale,1.f,10.f);
+        ImGui::InputFloat("OrthoSlice", &im_ortho_slice,0.1f,1.f);
+        ImGui::InputFloat("OrthoHeight", &im_ortho_height,0.1f,1.f);
+
+
         ImGui::InputInt("Edited_frame",&im_edited_frame);
         ImGui::SameLine();
         if(ImGui::Button("hide gizmo")){
@@ -697,6 +731,7 @@ int main(int argc, char **argv) {
                         (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
                 graph.add(PriorFactor<Pose3>(i*6, Pose3(keyframes[i]->mat), priorModel));
             }
+
             graph.print("\nFactor Graph:\n");  // print
             Values initial;
             for (int i =0; i < trajectory_noskip.size(); i++){
@@ -745,6 +780,49 @@ int main(int argc, char **argv) {
             f.close();
 
         }
+        if(ImGui::Button("flatten")) {
+            using namespace std;
+//            using namespace gtsam;
+//
+//            for (int i =0; i <keyframes.size() ; i++){
+//                keyframes[i]->mat.col(3).z() = 0;
+//            }
+
+
+            using namespace std;
+            using namespace gtsam;
+            NonlinearFactorGraph graph;
+
+            for (int i =0; i < keyframes.size(); i++){
+                auto priorModel = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e12, 1e12, 1e12, 1e12, 1e12, 1e-12).finished());
+                Eigen::Matrix4d mat = keyframes[i]->mat;
+                mat.col(3).z() = 0;
+                graph.add(PriorFactor<Pose3>(i, Pose3(mat), priorModel));
+            }
+
+
+            for (int i =1; i < keyframes.size(); i++){
+                auto odometryNoise = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e-1, 1e-1, 1e-1, 1e-1, 1e-1, 1e-1).finished());
+                Eigen::Matrix4d update = trajectory[i-1].inverse() * trajectory[i];
+                graph.emplace_shared<BetweenFactor<Pose3> >(i-1, i, Pose3(orthogonize(update)), odometryNoise);
+            }
+            graph.print("\nFactor Graph:\n");  // print
+            Values initial;
+            for (int i =0; i <keyframes.size(); i++){
+                initial.insert(i, Pose3(orthogonize(keyframes[i]->mat)));
+            }
+            Values result = LevenbergMarquardtOptimizer(graph, initial).optimize();
+            result.print("Final Result:\n");
+            for (int i =0; i < keyframes.size(); i++){
+                auto v =  result.at<Pose3>(i);
+                keyframes[i]->mat =v.matrix();
+            }
+
+
+        }
+
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io.Framerate, io.Framerate);
         if(ImGui::Button("reset view")){
             rot_x =0.0f;
@@ -766,15 +844,9 @@ int main(int argc, char **argv) {
             using namespace std;
             using namespace gtsam;
             NonlinearFactorGraph graph;
-            if(icp_gt_resutls.empty()) {
-                auto priorModel = noiseModel::Diagonal::Variances(
-                        (Vector(6) << 1e-12, 1e-12, 1e-12, 1e-12, 1e-12, 1e-12).finished());
-
-                graph.add(PriorFactor<Pose3>(0, Pose3(keyframes[0]->mat), priorModel));
-            }
             for (auto const& x : icp_gt_resutls ){
                 auto priorModel = noiseModel::Diagonal::Variances(
-                        (Vector(6) << 1e-6, 1e-6, 1e-6, 1e-6, 1e-6, 1e-6).finished());
+                        (Vector(6) << 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2).finished());
 
                 graph.add(PriorFactor<Pose3>(x.first, Pose3(x.second), priorModel));
             }
@@ -790,12 +862,22 @@ int main(int argc, char **argv) {
 //            }
 //
             //apply imu
-            for (int i =0; i < keyframes.size(); i++) {
-                auto priorModel = noiseModel::Diagonal::Variances(
-                        (Vector(6) <<1e-5, 1e-5, 1e10, 1e10, 1e10, 1e10).finished());
+//            for (int i =0; i < keyframes.size(); i++) {
+//                auto priorModel = noiseModel::Diagonal::Variances(
+//                        (Vector(6) <<1e-5, 1e-5, 1e10, 1e10, 1e10, 1e10).finished());
+//
+//                graph.add(PriorFactor<Pose3>(i, Pose3(trajectory[i]), priorModel));
+//            }
 
-                graph.add(PriorFactor<Pose3>(i, Pose3(trajectory[i]), priorModel));
+            // glue to ground
+            for (int i =0; i < keyframes.size(); i++){
+                auto priorModel = noiseModel::Diagonal::Variances(
+                        (Vector(6) << 1e5, 1e5, 1e5, 1e5, 1e5, 1).finished());
+                Eigen::Matrix4d mat = keyframes[i]->mat;
+                mat.col(3).z() = 0;
+                graph.add(PriorFactor<Pose3>(i, Pose3(mat), priorModel));
             }
+
             //aply odometry
             for (int i =1; i < keyframes.size(); i++){
                 auto odometryNoise = noiseModel::Diagonal::Variances(
@@ -1139,6 +1221,9 @@ int main(int argc, char **argv) {
                     break;
                 }
             }
+        }
+        if(im_edited_frame > 0 && im_edited_frame < keyframes.size()){
+            ImGui::Text("%s", keyframes[im_edited_frame]->fn.c_str());
         }
         ImGui::End();
 

@@ -135,6 +135,7 @@ Eigen::Matrix4d my_utils::orthogonize(const Eigen::Matrix4d & p )
         ret.push_back(string(glob_result.gl_pathv[i]));
     }
     globfree(&glob_result);
+    std::sort(ret.begin(),ret.end());
     return ret;
 }
 
@@ -171,3 +172,29 @@ Eigen::Vector2d my_utils::loadNovatel(const std::string &fn){
     }
     return {-1,-1};
 }
+
+
+Eigen::Vector4d my_utils::loadGround(const std::string &fn) {
+    Eigen::Vector4d d = Eigen::Vector4d::Zero();
+    std::fstream infile(fn);
+    if (infile.is_open()) {
+        infile >> d[0] >> d[1] >> d[2] >> d[3];
+    }
+    return d;
+}
+
+Eigen::Matrix4d my_utils::get4by4FromPlane(const Eigen::Vector4d& plane, Eigen::Vector2d pointXY){
+    Eigen::Matrix3d rot;
+    rot.col(2) = plane.head<3>();
+    rot.col(1) = plane.head<3>().cross(Eigen::Vector3d::UnitX());
+    rot.col(0) =rot.col(1) .cross(rot.col(2));
+    double z = (-plane.x() * pointXY.x() -plane.y() * pointXY.y() - plane.w())/plane.z();
+    Eigen::Matrix4d r = Eigen::Matrix4d::Identity();
+    r.topLeftCorner<3,3>() = rot;
+    r.col(3).x() = pointXY.x();
+    r.col(3).y() = pointXY.y();
+    r.col(3).z() = z;
+
+    return r;
+}
+

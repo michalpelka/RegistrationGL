@@ -60,6 +60,8 @@ namespace structs{
         Eigen::Vector2d UTM;
         Eigen::Vector2d UTM_offset;
         bool gnss_valid{false};
+        Eigen::Vector4d groundDir;
+        std::string fn;
 
     };
 

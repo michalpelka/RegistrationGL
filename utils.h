@@ -25,11 +25,15 @@ namespace my_utils{
 
     Eigen::Vector2d loadNovatel(const std::string &fn);
 
+    Eigen::Vector4d loadGround(const std::string &fn);
+
     Eigen::Matrix4d loadMat(const std::string& fn);
 
     void saveMat(const std::string& fn, const Eigen::Matrix4d& mat);
 
     Eigen::Matrix4d orthogonize(const Eigen::Matrix4d & p );
+
+    Eigen::Matrix4d get4by4FromPlane(const Eigen::Vector4d& plane, Eigen::Vector2d pointXY);
 
     std::vector<std::string> glob(const std::string& pat);
 

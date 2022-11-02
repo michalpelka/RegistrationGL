@@ -62,9 +62,15 @@ set(GTSAM_LIBRARIES gtsam)   # TODO: automatic search libs
 
 
 add_executable(slamGL main.cpp utils.cpp)
+add_executable(pcdToPlane pcd_to_plane.cpp utils.cpp)
 
 target_link_libraries(slamGL
         ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb Boost::program_options)
+
+target_link_libraries(pcdToPlane GL_Codes
+        ${GLEW_LIBRARIES} ${CERES_LIBRARIES} ${OPENGL_LIBRARIES} glfw  fmt::fmt Eigen3::Eigen ${PCL_LIBRARIES} gtsam tbb Boost::program_options)
+
+
 target_link_libraries(slamGL GL_Codes )
 
 
